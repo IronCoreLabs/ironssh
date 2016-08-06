@@ -245,6 +245,15 @@ ls_file(const char *name, const struct stat *st, int remote, int si_units)
 		tbuf[0] = '\0';
 	ulen = MAX(strlen(user), 8);
 	glen = MAX(strlen(group), 8);
+
+	/* *** ICL Modification *** if file has .iron extension, prefix with lock icon */
+	int offset = iron_extension_offset(name);
+	char nbuf[512];
+	char * icon_prefix = (offset > 0) ? ICL_LOCK_ICON : "  ";
+	sprintf(nbuf, "%s%s", icon_prefix, name);
+	name = nbuf;
+	/* *** */
+
 	if (si_units) {
 		fmt_scaled((long long)st->st_size, sbuf);
 		snprintf(buf, sizeof buf, "%s %3u %-*s %-*s %8s %s %s", mode,
@@ -257,3 +266,35 @@ ls_file(const char *name, const struct stat *st, int remote, int si_units)
 	}
 	return xstrdup(buf);
 }
+
+/* *** ICL Modification *** */
+/**
+ *  Check the directory/file name to see if it ends with the ICL sharing suffix.
+ *
+ *  @param fname Path name to inspect
+ *  @return int Offset of suffix in fname, or -1 if fname doesn't end with suffix
+ */
+int
+iron_extension_offset(const char * name)
+{
+	const char * ext = NULL;
+	const char * next_ext = strstr(name, ICL_SECURE_FILE_SUFFIX);
+	while (next_ext != NULL) {
+		ext = next_ext;
+		next_ext = strstr(ext + ICL_SECURE_FILE_SUFFIX_LEN, ICL_SECURE_FILE_SUFFIX);
+	}
+
+	if (ext != NULL)  {
+		if (*(ext + ICL_SECURE_FILE_SUFFIX_LEN) != '\0') {
+			//  The last string was not at the end, so it's not actually the file extension.
+			ext = NULL;
+		}
+	}
+
+	if (ext == NULL) {
+		return -1;
+	} else {
+		return (ext - name);
+	}
+}
+/* *** */

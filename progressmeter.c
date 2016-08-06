@@ -39,6 +39,7 @@
 #include "progressmeter.h"
 #include "atomicio.h"
 #include "misc.h"
+#include "sftp-common.h"  /* *** ICL Modification *** */
 
 #define DEFAULT_WINSIZE 80
 #define MAX_WINSIZE 512
@@ -160,10 +161,12 @@ refresh_progress_meter(void)
 	buf[0] = '\0';
 	file_len = win_size - 35;
 	if (file_len > 0) {
-		len = snprintf(buf, file_len + 1, "\r%s", file);
+#define LOCK_PREFIX_EXTRA_CHARS 4	//  For the return character and the first 3 of 4 bytes of the lock icon,
+	   								//	none of which take any space on the screen.
+		len = snprintf(buf, file_len + LOCK_PREFIX_EXTRA_CHARS, "\r%s%s", ICL_LOCK_ICON, file);
 		if (len < 0)
 			len = 0;
-		if (len >= file_len + 1)
+		if (len >= file_len + LOCK_PREFIX_EXTRA_CHARS)
 			len = file_len;
 		for (i = len; i < file_len; i++)
 			buf[i] = ' ';

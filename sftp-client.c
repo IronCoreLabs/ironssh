@@ -59,8 +59,12 @@
 #include "sftp-common.h"
 #include "sftp-client.h"
 
+#include "iron-gpg.h"		/* *** ICL Modification *** */
+
 extern volatile sig_atomic_t interrupted;
 extern int showprogress;
+
+extern char * user_login;	/* *** ICL Modification *** */
 
 /* Minimum amount of data to read at a time */
 #define MIN_READ_SIZE	512
@@ -80,9 +84,14 @@ struct sftp_conn {
 #define SFTP_EXT_FSTATVFS	0x00000004
 #define SFTP_EXT_HARDLINK	0x00000008
 #define SFTP_EXT_FSYNC		0x00000010
+/* *** ICL Modification *** */
+#define SFTP_EXT_ICL_SECURE_SHARING		0x10000000
+#define SFTP_EXT_ICL_IDENTITY_SERVERS	0x20000000
+/* *** */
 	u_int exts;
 	u_int64_t limit_kbps;
 	struct bwlimit bwlimit_in, bwlimit_out;
+	const char * icl_identity_servers;		/* *** ICL Modification *** */
 };
 
 static u_char *
@@ -390,6 +399,7 @@ do_init(int fd_in, int fd_out, u_int transfer_buflen, u_int num_requests,
 	ret->num_requests = num_requests;
 	ret->exts = 0;
 	ret->limit_kbps = 0;
+	ret->icl_identity_servers = NULL;	/* *** ICL Modification *** */
 
 	if ((msg = sshbuf_new()) == NULL)
 		fatal("%s: sshbuf_new failed", __func__);
@@ -447,6 +457,16 @@ do_init(int fd_in, int fd_out, u_int transfer_buflen, u_int num_requests,
 		    strcmp((char *)value, "1") == 0) {
 			ret->exts |= SFTP_EXT_FSYNC;
 			known = 1;
+		/* *** ICL Modification *** */
+		} else if (strcmp(name, ICL_SECURE_SHARING_EXT) == 0 &&
+		    strcmp((char *)value, ICL_SECURE_SHARING_VER) == 0) {
+			ret->exts |= SFTP_EXT_ICL_SECURE_SHARING;
+			known = 1;
+		} else if (strcmp(name, ICL_IDENTITY_SERVERS_EXT) == 0) {
+			ret->exts |= SFTP_EXT_ICL_IDENTITY_SERVERS;
+			ret->icl_identity_servers = strdup(value);
+			known = 1;
+		/* *** */
 		}
 		if (known) {
 			debug2("Server supports extension \"%s\" revision %s",
@@ -693,6 +713,14 @@ int
 do_mkdir(struct sftp_conn *conn, const char *path, Attrib *a, int print_flag)
 {
 	u_int status, id;
+
+	/* *** ICL Modifications *** block use of .iron. prefix on directory names on remote server,
+	 * since we use that for the files that store sharing info.  *** */
+	if ((conn->exts & SFTP_EXT_ICL_SECURE_SHARING) == 0 && iron_extension_offset(path) >= 0) {
+		error("Directory name suffix \"%s\" reserved for use on the server", ICL_SECURE_FILE_SUFFIX);
+		return(-1);
+	}
+	/* *** */
 
 	id = conn->msg_id++;
 	send_string_attrs_request(conn, id, SSH2_FXP_MKDIR, path,
@@ -1404,6 +1432,22 @@ do_download(struct sftp_conn *conn, const char *remote_path,
 			status = SSH2_FX_FAILURE;
 		else
 			status = SSH2_FX_OK;
+
+		/*  *** ICL Modification ***
+		 *  After downloading a file, determine whether it is encrypted or not. A ".iron" suffix is not required,
+		 *  in case someone messed around with the files on the server without using ironsftp. If the file was
+		 *  encrypted, decrypt it. The resulting file will be named using the name of the file that was encrypted.
+		 *  (This name is embedded in the encrypted data).
+		 */
+		char dec_fname[PATH_MAX + 1];
+		int new_local_fd = write_gpg_decrypted_file(user_login, local_path, dec_fname);
+		if (new_local_fd > 0) {
+			close(local_fd);
+			unlink(local_path);
+			local_fd = new_local_fd;
+		}
+		/* *** */
+		
 		/* Override umask and utimes if asked */
 #ifdef HAVE_FCHMOD
 		if (preserve_flag && fchmod(local_fd, mode) == -1)
@@ -1574,6 +1618,13 @@ do_upload(struct sftp_conn *conn, const char *local_path,
 
 	TAILQ_INIT(&acks);
 
+	/* *** ICL Modification ***  Block use of .iron file names on remote server - reserve for our encrypted files. */
+	if (iron_extension_offset(local_path) > 0) {
+		error("File extension \"%s\" reserved for encrypted files.", ICL_SECURE_FILE_SUFFIX);
+		return(-1);
+	}
+	/* *** */
+
 	if ((local_fd = open(local_path, O_RDONLY, 0)) == -1) {
 		error("Couldn't open local file \"%s\" for reading: %s",
 		    local_path, strerror(errno));
@@ -1597,6 +1648,14 @@ do_upload(struct sftp_conn *conn, const char *local_path,
 	a.perm &= 0777;
 	if (!preserve_flag)
 		a.flags &= ~SSH2_FILEXFER_ATTR_ACMODTIME;
+
+	/* *** ICL Modification ***  Encrypt local file before uploading. */
+	local_fd = write_gpg_encrypted_file(local_path, 1, NULL);
+	if (local_fd < 0) {
+		error("Unable to encrypt local file \"%s\" before uploading.", local_path);
+		return(-1);
+	}
+	/* *** */
 
 	if (resume) {
 		/* Get remote file size if it exists */
@@ -1801,6 +1860,7 @@ upload_dir_internal(struct sftp_conn *conn, const char *src, const char *dst,
 	a.flags &= ~SSH2_FILEXFER_ATTR_SIZE;
 	a.flags &= ~SSH2_FILEXFER_ATTR_UIDGID;
 	a.perm &= 01777;
+
 	if (!preserve_flag)
 		a.flags &= ~SSH2_FILEXFER_ATTR_ACMODTIME;
 

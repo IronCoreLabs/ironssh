@@ -52,6 +52,7 @@
 #include "sftp.h"
 #include "sftp-common.h"
 
+
 /* Our verbosity */
 static LogLevel log_level = SYSLOG_LEVEL_ERROR;
 
@@ -74,6 +75,9 @@ static int readonly;
 
 /* Requests that are allowed/denied */
 static char *request_whitelist, *request_blacklist;
+
+
+static char *icl_identity_servers = NULL;	/* *** ICL Modification *** IronCore Labs identity servers */
 
 /* portable attributes, etc. */
 typedef struct Stat Stat;
@@ -667,7 +671,13 @@ process_init(void)
 	    (r = sshbuf_put_cstring(msg, "1")) != 0 || /* version */
 	    /* fsync extension */
 	    (r = sshbuf_put_cstring(msg, "fsync@openssh.com")) != 0 ||
-	    (r = sshbuf_put_cstring(msg, "1")) != 0) /* version */
+	    (r = sshbuf_put_cstring(msg, "1")) != 0 || /* version */
+		/* *** ICL Modification ***  IronCore Labs extensions */
+		(r = sshbuf_put_cstring(msg, ICL_SECURE_SHARING_EXT)) != 0 ||
+		(r = sshbuf_put_cstring(msg, ICL_SECURE_SHARING_VER)) != 0 ||
+		(r = sshbuf_put_cstring(msg, ICL_IDENTITY_SERVERS_EXT)) != 0 ||
+		(r = sshbuf_put_cstring(msg, icl_identity_servers)) != 0)
+		/* *** */
 		fatal("%s: buffer error: %s", __func__, ssh_err(r));
 	send_msg(msg);
 	sshbuf_free(msg);
@@ -1116,12 +1126,21 @@ process_mkdir(u_int32_t id)
 	    (r = decode_attrib(iqueue, &a)) != 0)
 		fatal("%s: buffer error: %s", __func__, ssh_err(r));
 
-	mode = (a.flags & SSH2_FILEXFER_ATTR_PERMISSIONS) ?
-	    a.perm & 07777 : 0777;
-	debug3("request %u: mkdir", id);
-	logit("mkdir name \"%s\" mode 0%o", name, mode);
-	r = mkdir(name, mode);
-	status = (r == -1) ? errno_to_portable(errno) : SSH2_FX_OK;
+	/* *** ICL Modification *** Refuse requests to create diretories ending in ICL .iron extension.
+	 * This prevents someone from creating a directory like foo.iron, then trying to share foo and
+	 * having it fail because the encrypted file name was not available.
+	 */
+	if (iron_extension_offset(name) >= 0) {
+		verbose("Refusing to create directory with the extension " ICL_SECURE_FILE_SUFFIX);
+		status = SSH2_FX_PERMISSION_DENIED;
+	} else {
+		mode = (a.flags & SSH2_FILEXFER_ATTR_PERMISSIONS) ?
+			a.perm & 07777 : 0777;
+		debug3("request %u: mkdir", id);
+		logit("mkdir name \"%s\" mode 0%o", name, mode);
+		r = mkdir(name, mode);
+		status = (r == -1) ? errno_to_portable(errno) : SSH2_FX_OK;
+	}
 	send_status(id, status);
 	free(name);
 }
@@ -1517,7 +1536,7 @@ sftp_server_main(int argc, char **argv, struct passwd *user_pw)
 	pw = pwcopy(user_pw);
 
 	while (!skipargs && (ch = getopt(argc, argv,
-	    "d:f:l:P:p:Q:u:cehR")) != -1) {
+	    "d:f:l:P:p:Q:u:i:cehR")) != -1) {  /* *** ICL Modification *** add -i arg */
 		switch (ch) {
 		case 'Q':
 			if (strcasecmp(optarg, "requests") != 0) {
@@ -1577,6 +1596,13 @@ sftp_server_main(int argc, char **argv, struct passwd *user_pw)
 				fatal("Invalid umask \"%s\"", optarg);
 			(void)umask((mode_t)mask);
 			break;
+		/* *** ICL Modification *** support specifying identity servers from command line */
+		case 'i':
+			if (icl_identity_servers != NULL)
+				fatal("Identity servers already set");
+			icl_identity_servers = xstrdup(optarg);
+			break;
+		/* *** */
 		case 'h':
 		default:
 			sftp_server_usage();

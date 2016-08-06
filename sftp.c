@@ -49,7 +49,6 @@ typedef void EditLine;
 #endif
 #include <limits.h>
 #include <signal.h>
-#include <stdarg.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -74,6 +73,13 @@ typedef void EditLine;
 
 #define DEFAULT_COPY_BUFLEN	32768	/* Size of buffer for up/download */
 #define DEFAULT_NUM_REQUESTS	64	/* # concurrent outstanding requests */
+
+/* *** ICL Modification *** */
+#include "iron-gpg.h"
+#include "sodium.h"
+
+char * user_login = NULL;
+/* *** */
 
 /* File to read commands from */
 FILE* infile;
@@ -165,6 +171,8 @@ enum sftp_command {
 	I_SYMLINK,
 	I_VERSION,
 	I_PROGRESS,
+	I_ADD_RCPT,		/* *** ICL Modification *** */
+	I_RM_RCPT,		/* *** ICL Modification *** */
 };
 
 struct CMD {
@@ -179,6 +187,7 @@ struct CMD {
 #define LOCAL	2
 
 static const struct CMD cmds[] = {
+	{ "addrcpt",	I_ADD_RCPT,	LOCAL	},		/* *** ICL Modification *** */
 	{ "bye",	I_QUIT,		NOARGS	},
 	{ "cd",		I_CHDIR,	REMOTE	},
 	{ "chdir",	I_CHDIR,	REMOTE	},
@@ -210,10 +219,10 @@ static const struct CMD cmds[] = {
 	{ "reput",	I_REPUT,	LOCAL	},
 	{ "rm",		I_RM,		REMOTE	},
 	{ "rmdir",	I_RMDIR,	REMOTE	},
+	{ "rmrcpt",	I_RM_RCPT,	LOCAL	},		/* *** ICL Modification *** */
 	{ "symlink",	I_SYMLINK,	REMOTE	},
 	{ "version",	I_VERSION,	NOARGS	},
 	{ "!",		I_SHELL,	NOARGS	},
-	{ "?",		I_HELP,		NOARGS	},
 	{ NULL,		-1,		-1	}
 };
 
@@ -247,6 +256,7 @@ static void
 help(void)
 {
 	printf("Available commands:\n"
+		"addrcpt login                      Add login to recipient list\n"		/* *** ICL Modification *** */
 	    "bye                                Quit sftp\n"
 	    "cd path                            Change remote directory to 'path'\n"
 	    "chgrp grp path                     Change group of file 'path' to 'grp'\n"
@@ -274,6 +284,7 @@ help(void)
 	    "rename oldpath newpath             Rename remote file\n"
 	    "rm path                            Delete remote file\n"
 	    "rmdir path                         Remove remote directory\n"
+		"rmrcpt login                       Remove login from recipient list\n"		/* *** ICL Modification *** */
 	    "symlink oldpath newpath            Symlink remote file\n"
 	    "version                            Show SFTP version\n"
 	    "!command                           Execute 'command' in local shell\n"
@@ -724,16 +735,22 @@ process_put(struct sftp_conn *conn, const char *src, const char *dst,
 			goto out;
 		}
 
+		/* *** ICL Modification ***  Append .iron extension to destination file name */
+		char iron_name[PATH_MAX + ICL_SECURE_FILE_SUFFIX_LEN + 1];
+		strcpy(iron_name, filename);
+		strcat(iron_name, ICL_SECURE_FILE_SUFFIX);
+		/* *** */
+		
 		if (g.gl_matchc == 1 && tmp_dst) {
 			/* If directory specified, append filename */
 			if (dst_is_dir)
-				abs_dst = path_append(tmp_dst, filename);
+				abs_dst = path_append(tmp_dst, iron_name);
 			else
 				abs_dst = xstrdup(tmp_dst);
 		} else if (tmp_dst) {
-			abs_dst = path_append(tmp_dst, filename);
+			abs_dst = path_append(tmp_dst, iron_name);			/* *** ICL Modification *** */
 		} else {
-			abs_dst = make_absolute(xstrdup(filename), pwd);
+			abs_dst = make_absolute(xstrdup(iron_name), pwd);	/* *** ICL Modification *** */
 		}
 		free(tmp);
 
@@ -810,6 +827,8 @@ do_ls_dir(struct sftp_conn *conn, const char *path,
 		m += strlen(tmp);
 		free(tmp);
 
+		m += 2;  /* *** ICL Modification *** add space for lock icon or two spaces if not required*/
+
 		if (ioctl(fileno(stdin), TIOCGWINSZ, &ws) != -1)
 			width = ws.ws_col;
 
@@ -847,10 +866,26 @@ do_ls_dir(struct sftp_conn *conn, const char *path,
 				    (lflag & LS_SI_UNITS));
 				mprintf("%s\n", lname);
 				free(lname);
-			} else
-				mprintf("%s\n", d[n]->longname);
+			} else {
+				/* *** ICL Modification *** if file has .iron extension, prefix with lock icon */
+				int offset = iron_extension_offset(fname);
+				char * fname_start = strstr(d[n]->longname, fname);
+				if (fname_start == NULL) {
+					fname_start = d[n]->longname + strlen(d[n]->longname);
+				}
+
+				int len = fname_start - d[n]->longname;
+				mprintf("%-*.*s", len, len, d[n]->longname);
+				char * icon_prefix = (offset > 0) ? ICL_LOCK_ICON : "  ";
+				mprintf("%s%s\n", icon_prefix, fname);
+				/* *** */
+			}
 		} else {
-			mprintf("%-*s", colspace, fname);
+			/* *** ICL Modification *** if file has .iron extension, prefix with lock icon */
+			int offset = iron_extension_offset(fname);
+			char * icon_prefix = (offset > 0) ? ICL_LOCK_ICON : "  ";
+			mprintf("%s%-*s", icon_prefix, (colspace - 2), fname);
+			/* *** */
 			if (c >= columns) {
 				printf("\n");
 				c = 1;
@@ -917,6 +952,8 @@ do_globbed_ls(struct sftp_conn *conn, const char *path,
 		for (i = 0; g.gl_pathv[i]; i++)
 			m = MAX(m, strlen(g.gl_pathv[i]));
 
+		m += 2;  /* *** ICL Modification *** add space for lock icon or two spaces if not required*/
+
 		columns = width / (m + 2);
 		columns = MAX(columns, 1);
 		colspace = width / columns;
@@ -934,7 +971,14 @@ do_globbed_ls(struct sftp_conn *conn, const char *path,
 			mprintf("%s\n", lname);
 			free(lname);
 		} else {
-			mprintf("%-*s", colspace, fname);
+			/* *** ICL Modification *** if file has .iron extension, prefix with lock icon */
+			int offset = iron_extension_offset(fname);
+			if (offset > 0) {
+				mprintf("%s%-*s", ICL_LOCK_ICON, (colspace - 2), fname);
+			} else {
+				mprintf("  %-*s", (colspace - 2), fname);
+			}
+			/* *** */
 			if (c >= columns) {
 				printf("\n");
 				c = 1;
@@ -1387,8 +1431,18 @@ parse_args(const char **cpp, int *ignore_errors, int *aflag,
 	case I_HELP:
 	case I_VERSION:
 	case I_PROGRESS:
+		break;
+	case I_ADD_RCPT:
+	case I_RM_RCPT:
 		if ((optidx = parse_no_flags(cmd, argv, argc)) == -1)
 			return -1;
+		/* Login is required */
+		if (argc - optidx < 1) {
+			error("You must specify a login after a %s command.",
+			    cmd);
+			return -1;
+		}
+		*path1 = xstrdup(argv[optidx]);
 		break;
 	default:
 		fatal("Command not implemented");
@@ -1633,6 +1687,21 @@ parse_dispatch_command(struct sftp_conn *conn, const char *cmd, char **pwd,
 			printf("Progress meter enabled\n");
 		else
 			printf("Progress meter disabled\n");
+		break;
+	/* *** ICL Modification *** handle new addrcpt and rmrcpt commands */
+	case I_ADD_RCPT:
+		if (add_recipient(path1) == 0) {
+			mprintf("Added login %s to the recipient list\n", path1);
+		} else {
+			err = 1;
+		}
+		break;
+	case I_RM_RCPT:
+		if (remove_recipient(path1) == 0) {
+			mprintf("Removed login %s from the recipient list\n", path1);
+		} else {
+			err = 1;
+		}
 		break;
 	default:
 		fatal("%d is not implemented", cmdnum);
@@ -2425,6 +2494,24 @@ main(int argc, char **argv)
 		connect_to_server(sftp_direct, args.list, &in, &out);
 	}
 	freeargs(&args);
+
+	/* *** ICL Modification *** find user's login name for use during execution */
+	struct passwd * user_pw = getpwuid(getuid());
+	if (user_pw == NULL) {
+		fprintf(stderr, "Unable to determine current user's login\n");
+		usage();
+	} else {
+		user_login = xstrdup(user_pw->pw_name);
+	}
+
+	if (sodium_init() == -1) {
+		fatal("Couldn't initialise sodium library");
+	}
+
+	if (check_iron_keys(user_login) == -1) {
+		fatal("Couldn't find or generate secure file sharing keys.");
+	}
+	/* *** */
 
 	conn = do_init(in, out, copy_buffer_len, num_requests, limit_kbps);
 	if (conn == NULL)
