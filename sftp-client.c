@@ -84,10 +84,6 @@ struct sftp_conn {
 #define SFTP_EXT_FSTATVFS	0x00000004
 #define SFTP_EXT_HARDLINK	0x00000008
 #define SFTP_EXT_FSYNC		0x00000010
-/* *** ICL Modification *** */
-#define SFTP_EXT_ICL_SECURE_SHARING		0x10000000
-#define SFTP_EXT_ICL_IDENTITY_SERVERS	0x20000000
-/* *** */
 	u_int exts;
 	u_int64_t limit_kbps;
 	struct bwlimit bwlimit_in, bwlimit_out;
@@ -457,16 +453,6 @@ do_init(int fd_in, int fd_out, u_int transfer_buflen, u_int num_requests,
 		    strcmp((char *)value, "1") == 0) {
 			ret->exts |= SFTP_EXT_FSYNC;
 			known = 1;
-		/* *** ICL Modification *** */
-		} else if (strcmp(name, ICL_SECURE_SHARING_EXT) == 0 &&
-		    strcmp((char *)value, ICL_SECURE_SHARING_VER) == 0) {
-			ret->exts |= SFTP_EXT_ICL_SECURE_SHARING;
-			known = 1;
-		} else if (strcmp(name, ICL_IDENTITY_SERVERS_EXT) == 0) {
-			ret->exts |= SFTP_EXT_ICL_IDENTITY_SERVERS;
-			ret->icl_identity_servers = strdup(value);
-			known = 1;
-		/* *** */
 		}
 		if (known) {
 			debug2("Server supports extension \"%s\" revision %s",
@@ -716,7 +702,7 @@ do_mkdir(struct sftp_conn *conn, const char *path, Attrib *a, int print_flag)
 
 	/* *** ICL Modifications *** block use of .iron. prefix on directory names on remote server,
 	 * since we use that for the files that store sharing info.  *** */
-	if ((conn->exts & SFTP_EXT_ICL_SECURE_SHARING) == 0 && iron_extension_offset(path) >= 0) {
+	if (iron_extension_offset(path) >= 0) {
 		error("Directory name suffix \"%s\" reserved for use on the server", ICL_SECURE_FILE_SUFFIX);
 		return(-1);
 	}

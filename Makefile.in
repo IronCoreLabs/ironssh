@@ -31,8 +31,6 @@ SSH_PRIVSEP_USER=@SSH_PRIVSEP_USER@
 STRIP_OPT=@STRIP_OPT@
 TEST_SHELL=@TEST_SHELL@
 
-IRONSFTP_SERVER=$(libexecdir)/ironsftp-server
-
 PATHS= -DSSHDIR=\"$(sysconfdir)\" \
 	-D_PATH_SSH_PROGRAM=\"$(SSH_PROGRAM)\" \
 	-D_PATH_SSH_ASKPASS_DEFAULT=\"$(ASKPASS_PROGRAM)\" \
@@ -70,9 +68,7 @@ SODIUM_DIR = /usr/local/Cellar/libsodium/${SODIUM_VER}
 CFLAGS += -I${SODIUM_DIR}/include
 LDFLAGS += -L${SODIUM_DIR}/lib -lsodium
 
-IRON_TARGETS=ironscp$(EXEEXT) ironsftp-server$(EXEEXT) ironsftp$(EXEEXT)
-
-IRON_TEST_TARGETS=irongpg$(EXEEXT)
+IRON_TARGETS = ironsftp$(EXEEXT)
 # ***
 
 TARGETS=ssh$(EXEEXT) sshd$(EXEEXT) ssh-add$(EXEEXT) ssh-keygen$(EXEEXT) ssh-keyscan${EXEEXT} ssh-keysign${EXEEXT} ssh-pkcs11-helper$(EXEEXT) ssh-agent$(EXEEXT) scp$(EXEEXT) sftp-server$(EXEEXT) sftp$(EXEEXT)
@@ -162,8 +158,6 @@ $(LIBSSH_OBJS): Makefile.in config.h
 $(SSHOBJS): Makefile.in config.h
 $(SSHDOBJS): Makefile.in config.h
 
-iron-test: $(IRON_TEST_TARGETS)
-
 .c.o:
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
 
@@ -178,16 +172,6 @@ libssh.a: $(LIBSSH_OBJS)
 
 ironsftp$(EXEEXT): $(LIBCOMPAT) sftp.o sftp-client.o sftp-common.o sftp-glob.o iron-gpg.o libssh.a
 	$(LD) -o $@ sftp.o sftp-client.o sftp-common.o sftp-glob.o iron-gpg.o $(LDFLAGS) -lssh -lopenbsd-compat $(LIBS)
-
-ironsftp-server$(EXEEXT): $(LIBCOMPAT) sftp-server.o sftp-server-main.o sftp-common.o libssh.a
-	$(LD) -o $@ sftp-server.o sftp-server-main.o sftp-common.o $(LDFLAGS) -lssh -lopenbsd-compat $(LIBS)
-
-ironscp$(EXEEXT):  $(LIBCOMPAT) scp.o libssh.a
-	$(LD) -o $@ scp.o $(LDFLAGS) -lssh -lopenbsd-compat $(LIBS)
-
-irongpg$(EXEEXT): iron-gpg-test.o sftp-common.o libssh.a $(LIBCOMPAT)
-	$(LD) -o $@ iron-gpg-test.o sftp-common.o $(LDFLAGS) -lssh -lopenbsd-compat $(LIBS)
-
 
 ssh$(EXEEXT): $(LIBCOMPAT) libssh.a $(SSHOBJS)
 	$(LD) -o $@ $(SSHOBJS) $(LDFLAGS) -lssh -lopenbsd-compat $(SSHLIBS) $(LIBS) $(GSSLIBS)

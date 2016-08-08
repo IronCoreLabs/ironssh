@@ -222,4 +222,5 @@ unit:
 		$$V ${.OBJDIR}/unittests/kex/test_kex ; \
 		$$V ${.OBJDIR}/unittests/hostkeys/test_hostkeys \
 			-d ${.CURDIR}/unittests/hostkeys/testdata ; \
+		$$V ${.OBJDIR}/unittests/irongpg/test_irongpg ; \
 	fi
