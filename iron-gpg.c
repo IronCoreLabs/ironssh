@@ -899,24 +899,21 @@ compute_gpg_sha1_hash_chars(const unsigned char * bstr, int bstr_len, unsigned c
  *  Uses the GPG algorithm to convert a passphrase into a key that can be used for symmetric key encryption.
  *  Why use a standard PBKDF?
  *
- *  Expects a nulll-terminated string as the passphrase and the specifier of the length of key it should
- *  generate. Outputs 8 bytes of random salt, and the requested number of bytes of key.
- *
- *  If we are going to encrypt with AES256, we need 32 bytes of key. To generate, we start with 8 bytes
- *  of random salt, followed by the passphrase. This string will be hashed repeatedly to generate the key.
- *  We are using SHA256 for the hash, which outputs 32 bytes, so we need only one hash. If a key of more 
- *  than 32 bytes is needed, we need to set up multiple hash contexts, so that the output of each of them
- *  concatenated together is the requested number of bytes. So, for example, if a 33 to 64 byte key is needed,
- *  we would create two hash contexts. If a 65 to 96 byte key is needed, we would create three hash contexts,
- *  etc.
+ *  If we are going to encrypt with AES256, we need 32 bytes of key. To generate, we concatenate the 8 bytes
+ *  of random salt and the passphrase. This string will be hashed repeatedly to generate the key.
+ *  We are using SHA1 for the hash, which outputs 20 bytes, and we are generating an AES128 key, which is 16
+ *  bytes, so we only need one hashes. If a key of more than 20 bytes is needed, we need to set up multiple hash
+ *  contexts, so that the output of each of them concatenated together generates the requested number of bytes.
+ *  So, for example, if a 21 to 40 byte key is needed, we would create two hash contexts. If a 41 to 60 byte key
+ *  is needed, we would create three hash contexts, etc.
  *
  *  To generate different data from each hash, each successive hash is initialized with one more byte of zeroes.
  *  The first hash has no initializer, the second has one byte of zeros, the third has two bytes, etc.
  *
- *  We first generate eight bytes of random salt and use that as a prefix for the passphrase. This new string
- *  is hashed repeatedly by each hash, until we have hashed >= S2K_ITER_BYTE_COUNT bytes. The key is formed by
- *  concatenating the output of the hashes, discarding the rightmost bytes of the last hash when we have enough
- *  bytes for the key.
+ *  The caller should provide eight bytes of random salt to use that as a prefix for the passphrase. This new
+ *  string is hashed repeatedly by each hash, until we have hashed exactly S2K_ITER_BYTE_COUNT bytes. The key
+ *  is formed by concatenating the output of the hashes, discarding the rightmost bytes of the last hash when
+ *  we have enough bytes for the key.
  *
  *  Yes, GPG is so special that regardless of what you specify for a hash algorithm, it's going to use SHA1.
  *  Thanks, GPG.
@@ -971,9 +968,10 @@ compute_gpg_s2k_key(const char * passphrase, int key_len, const unsigned char * 
 	unsigned char * key_ptr = key;
 	for (ct = 0, num_bytes_left = key_len; num_bytes_left > 0; num_bytes_left -= SHA_DIGEST_LENGTH, ct++) {
 		unsigned char digest[SHA_DIGEST_LENGTH];
+		int bytes_to_copy = (num_bytes_left < SHA_DIGEST_LENGTH) ? num_bytes_left : SHA_DIGEST_LENGTH;
 		SHA1_Final(digest, &(hash[ct]));
-		memcpy(key_ptr, digest, (num_bytes_left < SHA_DIGEST_LENGTH) ? num_bytes_left : SHA_DIGEST_LENGTH);
-		key_ptr += num_bytes_left;
+		memcpy(key_ptr, digest, bytes_to_copy);
+		key_ptr += bytes_to_copy;
 	}
 
 	assert (ct == num_hashes);
@@ -4053,9 +4051,11 @@ reset_recipients()
 
 
 /* ================================================================================================================
- * Poor programmer's unit test harness. If you compile this file with TESTING defined, it will generate a main().
- * Link it and run it to execute unit tests. Right now, they are validated with asserts, so the first failure will
- * stop the tests.
+ * Here lie the unit tests for the functions in this file. If you compile this file with TESTING defined, it will
+ * include all the tests.
+ *
+ * One reason for doing it this way is to allow almost all the code in this file to remain static and still have
+ * unit tests.
  * ================================================================================================================ */
 #ifdef TESTING
 
@@ -4203,6 +4203,8 @@ test_tags()
 
 	retval = get_tag_and_size(tstfile, &tag, &size);	//  Should be at EOF now
 	ASSERT_INT_EQ(retval, -1);
+
+	TEST_DONE();
 }
 
 static void
@@ -4232,6 +4234,8 @@ do_get_msg(FILE * tstfile, tdata * test_item)
 static void
 test_msgs(void)
 {
+	TEST_START("get_and_put_msgs");
+
 	//  Some faux GPG messages
 	unsigned char buf[] = {
 		0x84, 0x04, 0x01, 0x23, 0x45, 0x67,
@@ -4277,259 +4281,103 @@ test_msgs(void)
 	ASSERT_INT_EQ(retval, -1);
 	retval = put_gpg_message(tstfile, &msg);
 	ASSERT_INT_EQ(retval, -1);
+
+	TEST_DONE();
 }
 
-int
-mainline(int argc, char **argv)
+static void
+test_bignums(void)
 {
-	unsigned char buf[] = {
-		//  Next, some faux GPG messages
-		0x84, 0x04, 0x01, 0x23, 0x45, 0x67,
-		0xcc, 0x04, 0x12, 0x34, 0x56, 0x78,
-		//  Next, some bignums, all packed into a GPG message
-		0x84, 0x2d,
-		0x00, 0x06, 0x23,
-		0x00, 0x08, 0xa5,
-		0x00, 0x18, 0x12, 0x34, 0x56,
+	TEST_START("bignums");
+
+	static unsigned char bn1[] = { 0x00, 0x06, 0x23 };
+	static unsigned char bn2[] = { 0x00, 0x08, 0xa5 };
+	static unsigned char bn3[] = { 0x00, 0x15, 0x12, 0x34, 0x56 };
+	static unsigned char bn4[] = { 
 		0x01, 0x00, 
 		0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff
 	};
 
 
-	//  Create a file containing known content to read
-	FILE * tstfile = tmpfile();
-	fwrite(buf, sizeof(buf), sizeof(unsigned char), tstfile);
-	rewind(tstfile);
+	typedef struct bndata {
+		unsigned char * bndata;
+		size_t bndata_len;
+		int num_bits;
+	} bndata;
 
-	gpg_message msg;
-	gpg_tag tag;
-	ssize_t size;
-	int retval;
-   
-	retval = get_gpg_message(tstfile, &msg);
-	assert(retval == 0);
-	assert(msg.tag == GPG_TAG_PKESK);
-	assert(msg.len == 4);
-	const unsigned char * tmp_ptr = sshbuf_ptr(msg.data);
-	assert(tmp_ptr[0] == 0x01);
-	assert(tmp_ptr[1] == 0x23);
-	assert(tmp_ptr[2] == 0x45);
-	assert(tmp_ptr[3] == 0x67);
-	sshbuf_free(msg.data);
-	msg.data = NULL;
+	bndata test_item[] = {
+		{ bn1, sizeof(bn1), 6 },
+		{ bn2, sizeof(bn2), 8 },
+		{ bn3, sizeof(bn3), 21 },
+		{ bn4, sizeof(bn4), 256 }
+	};
 
-	retval = get_gpg_message(tstfile, &msg);
-	assert(retval == 0);
-	assert(msg.tag == GPG_TAG_TRUST);
-	assert(msg.len == 4);
-	tmp_ptr = sshbuf_ptr(msg.data);
-	assert(tmp_ptr[0] == 0x12);
-	assert(tmp_ptr[1] == 0x34);
-	assert(tmp_ptr[2] == 0x56);
-	assert(tmp_ptr[3] == 0x78);
-	sshbuf_free(msg.data);
-	msg.data = NULL;
 
-	retval = get_gpg_message(tstfile, &msg);
-	assert(retval == 0);
-	assert(msg.tag == GPG_TAG_PKESK);
-	assert(msg.len == 45);
-
+	struct sshbuf * bn_buf = sshbuf_new();
 	BIGNUM * bn = BN_new();
-	retval = get_bignum(msg.data, bn);
-	assert(retval == 0);
-	assert(BN_num_bits(bn) == 6);
+	for (size_t i = 0; i < sizeof(test_item) / sizeof(bndata); i++) {
+		BN_bin2bn(test_item[i].bndata + 2, test_item[i].bndata_len - 2, bn);
+		put_bignum(bn_buf, bn);
+	}
 
-	retval = get_bignum(msg.data, bn);
-	assert(retval == 0);
-	assert(BN_num_bits(bn) == 8);
+	unsigned char tmp[64];
+	for (size_t i = 0; i < sizeof(test_item) / sizeof(bndata); i++) {
+		int retval = get_bignum(bn_buf, bn);
+		ASSERT_INT_EQ(retval, 0);
+		ASSERT_INT_EQ(BN_num_bits(bn), test_item[i].num_bits);
+		int len = BN_bn2bin(bn, tmp);
+		ASSERT_INT_EQ(len, test_item[i].bndata_len - 2);
+		ASSERT_INT_EQ(memcmp(tmp, test_item[i].bndata + 2, len), 0);
+	}
 
-	retval = get_bignum(msg.data, bn);
-	assert(retval == 0);
-	assert(BN_num_bits(bn) == 21);
-
-	retval = get_bignum(msg.data, bn);
-	assert(retval == 0);
-	assert(BN_num_bits(bn) == 256);
-
-	FILE * outfile = tmpfile();
-
-	unsigned char tagbuf[6];
-	int len = generate_tag_and_size(GPG_TAG_PKESK, -1, tagbuf);
-	assert(len == 1);
-	assert (tagbuf[0] == 0x87);
-	fwrite(tagbuf, 1, len, outfile);
-
-	len = generate_tag_and_size(GPG_TAG_PKESK, 1, tagbuf);
-	assert(len == 2);
-	assert (tagbuf[0] == 0x84 && tagbuf[1] == 0x01);
-	fwrite(tagbuf, 1, len, outfile);
-
-	len = generate_tag_and_size(GPG_TAG_MARKER, 0x101, tagbuf);
-	assert(len == 3);
-	assert (tagbuf[0] == 0xa9 && tagbuf[1] == 0x01 && tagbuf[2] == 0x01);
-	fwrite(tagbuf, 1, len, outfile);
-
-	len = generate_tag_and_size(GPG_TAG_PUBLIC_SUBKEY, 0x10000001, tagbuf);
-	assert(len == 5);
-	assert (tagbuf[0] == 0xba);
-	assert (tagbuf[1] == 0x10);
-	assert (tagbuf[2] == 0x00);
-	assert (tagbuf[3] == 0x00);
-	assert (tagbuf[4] == 0x01);
-	fwrite(tagbuf, 1, len, outfile);
-
-	len = generate_tag_and_size(GPG_TAG_USER_ATTRIBUTE, 1, tagbuf);
-	assert(len == 2);
-	assert (tagbuf[0] == 0xd1 && tagbuf[1] == 0x01);
-	fwrite(tagbuf, 1, len, outfile);
-
-	len = generate_tag_and_size(GPG_TAG_SEIP_DATA, 0xc0, tagbuf);
-	assert(len == 3);
-	assert (tagbuf[0] == 0xd2);
-	assert (tagbuf[1] == 0xc0);
-	assert (tagbuf[2] == 0x00);
-	fwrite(tagbuf, 1, len, outfile);
-
-	len = generate_tag_and_size(GPG_TAG_SEIP_DATA, 0x20bf, tagbuf);
-	assert(len == 3);
-	assert (tagbuf[0] == 0xd2);
-	assert (tagbuf[1] == 0xdf);
-	assert (tagbuf[2] == 0xff);
-	fwrite(tagbuf, 1, len, outfile);
-
-	len = generate_tag_and_size(GPG_TAG_SEIP_DATA, 0x3000, tagbuf);
-	assert(len == 6);
-	assert (tagbuf[0] == 0xd2);
-	assert (tagbuf[1] == 0xff);
-	assert (tagbuf[2] == 0x00);
-	assert (tagbuf[3] == 0x00);
-	assert (tagbuf[4] == 0x30);
-	assert (tagbuf[5] == 0x00);
-	fwrite(tagbuf, 1, len, outfile);
-
-	len = generate_tag_and_size(GPG_TAG_RESERVED4, 0x12345678, tagbuf);
-	assert(len == 6);
-	assert (tagbuf[0] == 0xff);
-	assert (tagbuf[1] == 0xff);
-	assert (tagbuf[2] == 0x12);
-	assert (tagbuf[3] == 0x34);
-	assert (tagbuf[4] == 0x56);
-	assert (tagbuf[5] == 0x78);
-	fwrite(tagbuf, 1, len, outfile);
-
-	/* Don't handle the partial packet lengths yet, so we can only do lengths through 32 bits */
-	len = generate_tag_and_size(GPG_TAG_RESERVED4, 0x100000001, tagbuf);
-	assert(len == -1);
-
-	msg.tag = GPG_TAG_SECRET_SUBKEY;
-	msg.len = 8;
-	msg.data = sshbuf_from("Test1234", msg.len);
-	retval = put_gpg_message(outfile, &msg);
-	assert(retval == 0);
-	sshbuf_free(msg.data);
-	msg.data = NULL;
-
-	msg.tag = GPG_TAG_USER_ATTRIBUTE;
-	msg.data = sshbuf_new();
-	retval = put_bignum(msg.data, bn);
-	assert(retval == 0);
-	msg.len = sshbuf_len(msg.data);
-	retval = put_gpg_message(outfile, &msg);
-	assert(retval == 0);
-	sshbuf_free(msg.data);
-	msg.data = NULL;
+	sshbuf_free(bn_buf);
 	BN_free(bn);
 
-	rewind(outfile);
+	TEST_DONE();
+}
 
-	retval = get_tag_and_size(outfile, &tag, &size);
-	assert(retval == 0);
-	assert(tag == GPG_TAG_PKESK);
-	assert(size == -1);
+static void
+test_s2k(void)
+{
+	TEST_START("s2k");
 
-	retval = get_tag_and_size(outfile, &tag, &size);
-	assert(retval == 0);
-	assert(tag == GPG_TAG_PKESK);
-	assert(size == 1);
-
-	retval = get_tag_and_size(outfile, &tag, &size);
-	assert(retval == 0);
-	assert(tag == GPG_TAG_MARKER);
-	assert(size == 0x101);
-
-	retval = get_tag_and_size(outfile, &tag, &size);
-	assert(retval == 0);
-	assert(tag == GPG_TAG_PUBLIC_SUBKEY);
-	assert(size == 0x10000001);
-
-	retval = get_tag_and_size(outfile, &tag, &size);
-	assert(retval == 0);
-	assert(tag == GPG_TAG_USER_ATTRIBUTE);
-	assert(size == 1);
-
-	retval = get_tag_and_size(outfile, &tag, &size);
-	assert(retval == 0);
-	assert(tag == GPG_TAG_SEIP_DATA);
-	assert(size == 0xc0);
-
-	retval = get_tag_and_size(outfile, &tag, &size);
-	assert(retval == 0);
-	assert(tag == GPG_TAG_SEIP_DATA);
-	assert(size == 0x20bf);
-
-	retval = get_tag_and_size(outfile, &tag, &size);
-	assert(retval == 0);
-	assert(tag == GPG_TAG_SEIP_DATA);
-	assert(size == 0x3000);
-
-	retval = get_tag_and_size(outfile, &tag, &size);
-	assert(retval == 0);
-	assert(tag == GPG_TAG_RESERVED4);
-	assert(size == 0x12345678);
-
-	retval = get_gpg_message(outfile, &msg);
-	assert(retval == 0);
-	assert(msg.tag == GPG_TAG_SECRET_SUBKEY);
-	assert(msg.len == 8);
-	assert(memcmp(sshbuf_ptr(msg.data), "Test1234", 8) == 0);
-
-	retval = get_gpg_message(outfile, &msg);
-	assert(retval == 0);
-	assert(msg.tag == GPG_TAG_USER_ATTRIBUTE);
-	assert(msg.len == 34);
-	assert(memcmp(sshbuf_ptr(msg.data), buf + (sizeof(buf) - 34), 33) == 0);
-	fclose(outfile);
-
-
-	unsigned char salt[S2K_SALT_BYTES];
-	unsigned char s2k_key[16];
-
-	randombytes_buf(salt, S2K_SALT_BYTES);
+	static unsigned char salt[S2K_SALT_BYTES] = { 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32, 0x10 };
 	const char * pphrase = "ImGumbyAndYouAreNot";
-	compute_gpg_s2k_key(pphrase, 32, salt, S2K_ITER_BYTE_COUNT, s2k_key);
 
-	/*  Check to make sure that it computed the right key value  */
-	SHA_CTX foo;
-	SHA1_Init(&foo);
-	char kbuf[64];
-	int num_to_hash = S2K_ITER_BYTE_COUNT;
-	len = S2K_SALT_BYTES + strlen(pphrase);
-	memcpy(kbuf, salt, S2K_SALT_BYTES);
-	memcpy(kbuf + S2K_SALT_BYTES, pphrase, len - S2K_SALT_BYTES);
+	static unsigned char expected_key1[AES128_KEY_BYTES] = {
+		0x0e, 0xa5, 0x00, 0x1c, 0xce, 0xad, 0x7e, 0xa8, 0xa0, 0x81, 0x38, 0xae, 0xaf, 0x4e, 0x28, 0xd5
+	};
+	unsigned char s2k_key1[AES128_KEY_BYTES];
 
-	while (num_to_hash > len) {
-		SHA1_Update(&foo, kbuf, len);
-		num_to_hash -= len;
-	}
-	SHA1_Update(&foo, kbuf, num_to_hash);
+	compute_gpg_s2k_key(pphrase, sizeof(s2k_key1), salt, S2K_ITER_BYTE_COUNT, s2k_key1);
+	ASSERT_INT_EQ(memcmp(s2k_key1, expected_key1, sizeof(s2k_key1)), 0);
 
-	unsigned char dig1[SHA_DIGEST_LENGTH];
-	SHA1_Final(dig1, &foo);
-	assert(memcmp(dig1, s2k_key, SHA_DIGEST_LENGTH) == 0);
+	//  Second test to handle the case where we need to run multiple hashes to generate enough bits
+	//  Note that the first 16 bytes are the same as the previous test - this is to be expected, since the
+	//  salt and passphrase are the same, so the first hash is executed identically.
+	static unsigned char expected_key2[48] = {
+		0x0e, 0xa5, 0x00, 0x1c, 0xce, 0xad, 0x7e, 0xa8, 0xa0, 0x81, 0x38, 0xae, 0xaf, 0x4e, 0x28, 0xd5,
+		0x21, 0xf1, 0xee, 0x4b, 0x02, 0xc0, 0x0f, 0x63, 0x6a, 0x17, 0xbf, 0x62, 0x34, 0x10, 0x26, 0x48,
+		0x7b, 0xc6, 0x3f, 0x08, 0x9d, 0xb5, 0x6b, 0x34, 0x70, 0x3b, 0x71, 0xdb, 0x67, 0x92, 0x6f, 0x5f
+	};
+	unsigned char s2k_key2[48];
+
+	compute_gpg_s2k_key(pphrase, sizeof(s2k_key2), salt, S2K_ITER_BYTE_COUNT, s2k_key2);
+	ASSERT_INT_EQ(memcmp(s2k_key2, expected_key2, sizeof(s2k_key2)), 0);
+
+	TEST_DONE();
+}
+
+int
+mainline(int argc, char **argv)
+{
+
 
 	gpg_now = time(NULL);
+
+	int len;
+	int retval;
 
 	retval = check_iron_keys(user_login);
 	assert(retval == 0);
@@ -4735,6 +4583,8 @@ mainline(int argc, char **argv)
 
 	SHA512_CTX  ctx;
 	SHA512_Init(&ctx);
+
+	unsigned char buf[512];
 
 	len = generate_tag_and_size(pk1.tag, pk1.len, buf);
 	SHA512_Update(&ctx, buf, len);
@@ -4971,6 +4821,8 @@ tests(void)
 
 	test_tags();
 	test_msgs();
+	test_bignums();
+	test_s2k();
 }
 
 #endif

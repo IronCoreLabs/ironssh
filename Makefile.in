@@ -63,7 +63,7 @@ EXEEXT=@EXEEXT@
 MANFMT=@MANFMT@
 
 # *** ICL Modification ***
-SODIUM_VER = 1.0.10
+SODIUM_VER = 1.0.11
 SODIUM_DIR = /usr/local/Cellar/libsodium/${SODIUM_VER}
 CFLAGS += -I${SODIUM_DIR}/include
 LDFLAGS += -L${SODIUM_DIR}/lib -lsodium
@@ -203,8 +203,8 @@ ssh-keyscan$(EXEEXT): $(LIBCOMPAT) libssh.a ssh-keyscan.o
 sftp-server$(EXEEXT): $(LIBCOMPAT) libssh.a sftp.o sftp-common.o sftp-server.o sftp-server-main.o
 	$(LD) -o $@ sftp-server.o sftp-common.o sftp-server-main.o $(LDFLAGS) -lssh -lopenbsd-compat $(LIBS)
 
-sftp$(EXEEXT): $(LIBCOMPAT) libssh.a sftp.o sftp-client.o sftp-common.o sftp-glob.o progressmeter.o iron-sftp.o
-	$(LD) -o $@ progressmeter.o sftp.o sftp-client.o sftp-common.o sftp-glob.o iron-sftp.o $(LDFLAGS) -lssh -lopenbsd-compat $(LIBS) $(LIBEDIT)
+sftp$(EXEEXT): $(LIBCOMPAT) libssh.a sftp.o sftp-client.o sftp-common.o sftp-glob.o progressmeter.o sftp.o
+	$(LD) -o $@ progressmeter.o sftp.o sftp-client.o sftp-common.o sftp-glob.o sftp.o $(LDFLAGS) -lssh -lopenbsd-compat $(LIBS) $(LIBEDIT)
 
 # test driver for the loginrec code - not built by default
 logintest: logintest.o $(LIBCOMPAT) libssh.a loginrec.o
@@ -238,9 +238,6 @@ umac128.o:	umac.c
 	    -Dumac_update=umac128_update -Dumac_final=umac128_final \
 	    -Dumac_delete=umac128_delete -Dumac_ctx=umac128_ctx
 
-iron-gpg-test.o: iron-gpg.c
-	$(CC) $(CFLAGS) $(CPPFLAGS) -DTESTING -c $< -o $@
-
 clean:	regressclean
 	rm -f *.o *.a $(TARGETS) logintest config.cache config.log
 	rm -f *.out core survey
@@ -258,6 +255,8 @@ clean:	regressclean
 	rm -f regress/unittests/kex/test_kex
 	rm -f regress/misc/kexfuzz/*.o
 	rm -f regress/misc/kexfuzz/kexfuzz
+	rm -f regress/unittests/irongpg/*.o
+	rm -f regress/unittests/irongpg/test_irongpg
 	(cd openbsd-compat && $(MAKE) clean)
 
 distclean:	regressclean
@@ -279,6 +278,8 @@ distclean:	regressclean
 	rm -f regress/unittests/kex/*.o
 	rm -f regress/unittests/kex/test_kex
 	rm -f regress/unittests/misc/kexfuzz
+	rm -f regress/unittests/irongpg/*.o
+	rm -f regress/unittests/irongpg/test_irongpg
 	(cd openbsd-compat && $(MAKE) distclean)
 	if test -d pkg ; then \
 		rm -fr pkg ; \
@@ -440,6 +441,8 @@ regress-prep:
 		mkdir -p `pwd`/regress/unittests/kex
 	[ -d `pwd`/regress/misc/kexfuzz ] || \
 		mkdir -p `pwd`/regress/misc/kexfuzz
+	[ -d `pwd`/regress/unittests/irongpg ] || \
+		mkdir -p `pwd`/regress/unittests/irongpg
 	[ -f `pwd`/regress/Makefile ] || \
 	    ln -s `cd $(srcdir) && pwd`/regress/Makefile `pwd`/regress/Makefile
 
@@ -535,6 +538,20 @@ regress/misc/kexfuzz/kexfuzz$(EXEEXT): ${MISC_KEX_FUZZ_OBJS} libssh.a
 	$(LD) -o $@ $(LDFLAGS) $(MISC_KEX_FUZZ_OBJS) \
 	    -lssh -lopenbsd-compat -lssh -lopenbsd-compat $(LIBS)
 
+UNITTESTS_TEST_IRONGPG_OBJS=\
+	regress/unittests/irongpg/iron-gpg-tests.o \
+	sftp-common.o
+
+regress/unittests/irongpg/test_irongpg$(EXEEXT): \
+    ${UNITTESTS_TEST_IRONGPG_OBJS} \
+    regress/unittests/test_helper/libtest_helper.a libssh.a
+	$(LD) -o $@ $(LDFLAGS) $(UNITTESTS_TEST_IRONGPG_OBJS) \
+	    regress/unittests/test_helper/libtest_helper.a \
+	    -lssh -lopenbsd-compat -lssh -lopenbsd-compat $(LIBS)
+
+regress/unittests/irongpg/iron-gpg-tests.o: iron-gpg.c iron-gpg.h
+	$(CC) $(CFLAGS) $(CPPFLAGS) -DTESTING -c iron-gpg.c -o $@
+
 regress-binaries: regress/modpipe$(EXEEXT) \
 	regress/setuid-allowed$(EXEEXT) \
 	regress/netcat$(EXEEXT) \
@@ -544,9 +561,10 @@ regress-binaries: regress/modpipe$(EXEEXT) \
 	regress/unittests/bitmap/test_bitmap$(EXEEXT) \
 	regress/unittests/hostkeys/test_hostkeys$(EXEEXT) \
 	regress/unittests/kex/test_kex$(EXEEXT) \
+	regress/unittests/irongpg/test_irongpg$(EXEEXT) \
 	regress/misc/kexfuzz/kexfuzz$(EXEEXT)
 
-tests interop-tests t-exec: regress-prep regress-binaries $(TARGETS)
+tests interop-tests t-exec: regress-prep regress-binaries $(IRON_TARGETS)
 	BUILDDIR=`pwd`; \
 	TEST_SSH_SCP="$${BUILDDIR}/scp"; \
 	TEST_SSH_SSH="$${BUILDDIR}/ssh"; \
