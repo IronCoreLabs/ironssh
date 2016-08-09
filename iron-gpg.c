@@ -974,7 +974,6 @@ compute_gpg_s2k_key(const char * passphrase, int key_len, const unsigned char * 
 		key_ptr += bytes_to_copy;
 	}
 
-	assert (ct == num_hashes);
 	free(hash);
 }
 
@@ -2001,7 +2000,7 @@ encrypt_input_file(FILE * infile, FILE * outfile, SHA_CTX * sha_ctx, EVP_CIPHER_
  *  @param hash_bytes Num bytes to run through S2K hash to generate key
  *  @param iv Byte array containing initialization vector (should be GPG_SECKEY_IV_LEN bytes)
  *  @param d Place to write recovered secret key (should be crypto_box_SECRETKEYBYTES bytes)
- *  @return int Num bytes written to d
+ *  @return int Num bytes written to d, or negative number if error
  */
 static int
 extract_curve25519_seckey(const unsigned char * enc_data, int len, const struct sshkey * ssh_key,
@@ -2024,21 +2023,25 @@ extract_curve25519_seckey(const unsigned char * enc_data, int len, const struct 
 		unsigned char * output = malloc(len);
 		retval = cipher_crypt(&ciphercontext, 0, output, enc_data, len, 0, 0);
 		if (retval == 0) {
-			assert(strncmp(output, "(((1:d", 6) == 0);
-			unsigned char * ptr = output + 6;
-			int len = strtoul(ptr, (char **) &ptr, 10);
+			if (strncmp(output, "(((1:d", 6) == 0) {
+				unsigned char * ptr = output + 6;
+				int len = strtoul(ptr, (char **) &ptr, 10);
 
-			assert(*(ptr++) == ':');
+				if(*(ptr++) == ':') {
+					int pad_len = crypto_box_SECRETKEYBYTES - len;
+					if (pad_len > 0) {
+						memset(d, 0, pad_len);
+					}
 
-			int pad_len = crypto_box_SECRETKEYBYTES - len;
-			if (pad_len > 0) {
-				memset(d, 0, pad_len);
+					memcpy(d + pad_len, ptr, len);
+					retval = len;
+				} else {
+					logit("Improperly formatted data in decrypted secret key - unable to process.");
+				}
+			} else {
+				logit("Improperly formatted data in decrypted secret key - unable to process.");
 			}
-
-			memcpy(d + pad_len, ptr, len);
-			retval = len;
 		}
-
 		free(output);
 	}
 
@@ -2053,7 +2056,7 @@ extract_curve25519_seckey(const unsigned char * enc_data, int len, const struct 
  *  @param buf Byte array containing S-expression
  *  @param ssh_key RSA key used to protect GPG key
  *  @param d Place to write secret key (should be crypto_box_SECRETKEYBYTES bytes)
- *  @return int Num bytes written to d
+ *  @return int Num bytes written to d, negative number if error
  */
 static int
 get_gpg_curve25519_seckey(const unsigned char * buf, int buf_len, const struct sshkey * ssh_key, unsigned char * d)
@@ -2066,10 +2069,16 @@ get_gpg_curve25519_seckey(const unsigned char * buf, int buf_len, const struct s
 		ptr += prefix_len;
 		int len = strtol(ptr, (char **) &ptr, 10);
 		ptr++;  // Skip ':'
-		assert(*ptr == GPG_ECC_PUBKEY_PREFIX);
+		if (*ptr != GPG_ECC_PUBKEY_PREFIX) {
+			logit("Invalid format - unable to retrieve secret key.");
+			return -1;
+		}
 		ptr += len;
-		assert(*(ptr++) == ')');
-		assert(strncmp(ptr, GPG_SEC_PARM_PREFIX, strlen(GPG_SEC_PARM_PREFIX)) == 0);
+		if (*(ptr++) != ')' || (strncmp(ptr, GPG_SEC_PARM_PREFIX, strlen(GPG_SEC_PARM_PREFIX)) != 0)) {
+			logit("Invalid format - unable to retrieve secret key.");
+			return -2;
+		}
+
 		ptr += strlen(GPG_SEC_PARM_PREFIX);
 		//  Next grab the 8 byte salt for the SHA1 hash
 		unsigned char salt[S2K_SALT_BYTES];
@@ -2079,7 +2088,10 @@ get_gpg_curve25519_seckey(const unsigned char * buf, int buf_len, const struct s
 		//  Get the hash byte count - skip the "8:" preceding
 		ptr += 2;
 		int hash_bytes = strtol(ptr, (char **) &ptr, 10);
-		assert(strncmp(ptr, ")16:", 4) == 0);
+		if (strncmp(ptr, ")16:", 4) != 0) {
+			logit("Invalid format - unable to retrieve secret key.");
+			return -3;
+		}
 		ptr += 4;
 
 		//  Grab the 16-byte IV for the encrypted key
@@ -2087,18 +2099,27 @@ get_gpg_curve25519_seckey(const unsigned char * buf, int buf_len, const struct s
 		memcpy(iv, ptr, sizeof(iv));
 		ptr += sizeof(iv);
 
-		assert(*(ptr++) == ')');
+		if (*(ptr++) != ')') {
+			logit("Invalid format - unable to retrieve secret key.");
+			return -4;
+		}
 		len = strtol(ptr, (char **) &ptr, 10);
 		ptr++;  // Skip ':'
 
-		assert(((ptr - buf) + len) < buf_len - 1);
+		if (((ptr - buf) + len) >= buf_len - 1) {
+			logit("Invalid format - unable to retrieve secret key.");
+			return -5;
+		}
 
 		// ptr now points to the encrypted security parameters. Take that data, along with the necessary info
 		// to decrypt, and get the private key d peeled out of it.
 		retval = extract_curve25519_seckey(ptr, len, ssh_key, salt, hash_bytes, iv, d);
 
 		ptr += len;
-		assert(*ptr == ')');
+		if (*ptr != ')') {
+			logit("Invalid format - unable to retrieve secret key.");
+			return -6;
+		}
 	}
 
 	return retval;
@@ -2118,17 +2139,26 @@ get_gpg_curve25519_seckey(const unsigned char * buf, int buf_len, const struct s
 static int
 extract_ephemeral_key(const unsigned char * msg, const unsigned char ** ephem_pk)
 {
+	int retval = -1;
 	const unsigned char * msg_ptr = msg;
 	int epk_len = (*msg_ptr << 8) + *(msg_ptr + 1);
 	epk_len = (epk_len + 7) / 8;		//  Convert from bits to bytes
 	msg_ptr += 2;
-	assert(*msg_ptr == GPG_ECC_PUBKEY_PREFIX);
-	msg_ptr++;
-	epk_len--;
-	assert(epk_len == crypto_box_PUBLICKEYBYTES);
-	*ephem_pk = msg_ptr;
-	msg_ptr += epk_len;
-	return (msg_ptr - msg);
+	if (*msg_ptr == GPG_ECC_PUBKEY_PREFIX) {
+		msg_ptr++;
+		epk_len--;
+		if (epk_len == crypto_box_PUBLICKEYBYTES) {
+			*ephem_pk = msg_ptr;
+			msg_ptr += epk_len;
+			retval = msg_ptr - msg;
+		} else {
+			logit("Length of recovered ephemeral key incorrect - cannot recover data.");
+		}
+	} else {
+		logit("Ephemeral key format incorrect - cannot recover data.");
+	}
+
+	return retval;
 }
 
 /**
@@ -2142,22 +2172,27 @@ extract_ephemeral_key(const unsigned char * msg, const unsigned char ** ephem_pk
  *  @param secret Pointer to the shared secret derived by Curve25519. Should be crypto_box_BEFORENMBYTES long
  *  @param fp Pointer to the computed fingerprint for the key. Should be GPG_KEY_FP_LEN bytes long
  *  @param sym_key Pointer to the buffer into which to copy the retrieved key. Should be AES256_KEY_BYTES long
- *  @return Number of bytes processed from msg
+ *  @return Number of bytes processed from msg, negative number if error
  */
 static int
 extract_sym_key(const unsigned char * msg, const unsigned char * secret, const unsigned char * fp,
 				unsigned char * sym_key)
 {
+	int retval = -1;
 	unsigned char kek[AES256_KEY_BYTES];
 	unsigned char frame[AES256_KEY_BYTES + AES_WRAP_BLOCK_SIZE];
 
 	generate_gpg_kek(fp, secret, kek);
 	int enc_frame_len = *(msg++);
 	int frame_len = decrypt_gpg_key_frame(msg, enc_frame_len, kek, frame);
-	assert(frame_len == sizeof(frame));
-	assert(*frame == GPG_SKALGO_AES256);
-	memcpy(sym_key, frame + 1, AES256_KEY_BYTES);
-	return enc_frame_len + 1;
+	if (frame_len == sizeof(frame) && *frame == GPG_SKALGO_AES256) {
+		memcpy(sym_key, frame + 1, AES256_KEY_BYTES);
+		retval = enc_frame_len + 1;
+	} else {
+		logit("Unable to recover symmetric key - cannot recover data.");
+	}
+
+	return retval;
 }
 
 /**
@@ -2174,7 +2209,7 @@ extract_sym_key(const unsigned char * msg, const unsigned char * secret, const u
  *  @param num_dec Place to store number of bytes decrypted
  *  @param len Place to store remaining size of encrypted data to process
  *  @param extra Place to store number of bytes of trailing MDC packet that have already been read
- *  @return int Num bytes written to output array
+ *  @return int Num bytes written to output array, negative number if error
  */
 static int
 process_enc_data_hdr(SHA_CTX * sha_ctx, EVP_CIPHER_CTX * aes_ctx, FILE * infile,
@@ -2183,18 +2218,29 @@ process_enc_data_hdr(SHA_CTX * sha_ctx, EVP_CIPHER_CTX * aes_ctx, FILE * infile,
 	//  More than enough space to get through all the header stuff and into the encrypted file data.
 	unsigned char input[512];
 	size_t num_read = fread(input, 1, sizeof(input), infile);
-	assert(num_read >= 26);
+	if (num_read < 26) {
+		logit("Input too short - cannot recover data.");
+		return -1;
+	}
 
 	EVP_DecryptUpdate(aes_ctx, output, num_dec, input, num_read);
-	assert(*num_dec > 18);
-	assert(output[16] == output[14] && output[17] == output[15]);
+	if (*num_dec <= 18) {
+		logit("Decrypted input too short - cannot recover data.");
+		return -2;
+	}
+	if (output[16] != output[14] || output[17] != output[15]) {
+		logit("Checksum error in header - cannot recover data.");
+		return -3;
+	}
 	unsigned char * optr = output + 18;
 
 	gpg_tag tag;
 	int     tag_size_len = extract_tag_and_size(optr, &tag, len);
 	optr += tag_size_len;
-	assert(tag == GPG_TAG_LITERAL_DATA);
-	assert(*(optr++) == 'b');	//	We always write literal data in "binary" format
+	if (tag != GPG_TAG_LITERAL_DATA || *(optr++) != 'b') {	//	We always write literal data in "binary" format)
+		logit("Unexpected data at start of packet - cannot recover data.");
+		return -4;
+	}
 	int fname_len = *(optr++);
 	memcpy(fname, optr, fname_len);
 	fname[fname_len] = '\0';
@@ -2243,7 +2289,7 @@ static int
 process_enc_data(SHA_CTX * sha_ctx, EVP_CIPHER_CTX * aes_ctx, FILE * infile, FILE * outfile,
 				 unsigned char * output, int offset, ssize_t len, int extra)
 {
-	int retval = -1;
+	int retval = 0;
 
 	unsigned char input[CHUNK_SIZE];
 	int num_dec;
@@ -2252,6 +2298,11 @@ process_enc_data(SHA_CTX * sha_ctx, EVP_CIPHER_CTX * aes_ctx, FILE * infile, FIL
 
 	while (len > 0) {
 		num_read = fread(input, 1, sizeof(input), infile);
+		if (ferror(infile)) {
+			logit("Error reading input file.");
+			retval = -1;
+			break;
+		}
 		EVP_DecryptUpdate(aes_ctx, output, &num_dec, input, num_read);
 
 		optr = output;
@@ -2264,34 +2315,49 @@ process_enc_data(SHA_CTX * sha_ctx, EVP_CIPHER_CTX * aes_ctx, FILE * infile, FIL
 			optr += num_dec;
 		}
 
-		fwrite(output, 1, num_dec, outfile);
+		if (fwrite(output, 1, num_dec, outfile) != (size_t) num_dec) {
+			logit("Error writing output file");
+			retval = -1;
+			break;
+		}
 		len -= num_dec;
 		SHA1_Update(sha_ctx, output, num_dec);
-		retval = 0;
 	}
 
 	//  When we get to here, we should have written the entire decrypted data file, and
 	//  optr should point to the start of the MDC packet, if there was part of it in the
 	//  last decrypted block. Read the rest of the MDC packet and validate the hash.
-	num_read = fread(input, 1, sizeof(input), infile);
+	if (retval == 0) {
+		retval = -1;
 
-	if (extra > 0) {
-		memmove(output, optr, extra);
-		optr = output + extra;
+		num_read = fread(input, 1, sizeof(input), infile);
+		if (!ferror(infile)) {
+			if (extra > 0) {
+				memmove(output, optr, extra);
+				optr = output + extra;
+			}
+			EVP_DecryptUpdate(aes_ctx, optr, &num_dec, input, num_read);
+			int last_dec;
+			EVP_DecryptFinal_ex(aes_ctx, optr + num_dec, &last_dec);
+			num_dec += last_dec;
+			if (extra + num_dec == GPG_MDC_PKT_LEN) {
+				SHA1_Update(sha_ctx, output, 2);
+				unsigned char digest[SHA_DIGEST_LENGTH];
+				SHA1_Final(digest, sha_ctx);
+
+				if (memcmp(output + 2, digest, sizeof(digest)) == 0) {
+					retval = 0;
+				} else {
+					logit("Invalid Modification Detection Code - cannot recover data.");
+				}
+			} else {
+				logit("Length of input incorrect - cannot recover data.");
+			}
+		} else {
+			logit("Error reading input file.");
+		}
 	}
-	EVP_DecryptUpdate(aes_ctx, optr, &num_dec, input, num_read);
-	int last_dec;
-	EVP_DecryptFinal_ex(aes_ctx, optr + num_dec, &last_dec);
-	num_dec += last_dec;
-	assert(extra + num_dec == GPG_MDC_PKT_LEN);
 
-	SHA1_Update(sha_ctx, output, 2);
-	unsigned char digest[SHA_DIGEST_LENGTH];
-	SHA1_Final(digest, sha_ctx);
-
-	if (memcmp(output + 2, digest, sizeof(digest)) == 0) {
-		retval = 0;
-	}
 	return retval;
 }
 
@@ -3313,12 +3379,18 @@ write_encrypted_data_file(FILE * infile, const char * fname, FILE * outfile, uns
 		fwrite(output, 1, outp - output, outfile);
 
 		int total_read = encrypt_input_file(infile, outfile, &sha_ctx, &aes_ctx);
-		assert((off_t) total_read == statstr.st_size);
-
-		retval = write_gpg_mdc_packet(outfile, &sha_ctx, &aes_ctx);
+		if (total_read > 0) {
+		   	if ((off_t) total_read == statstr.st_size) {
+				retval = write_gpg_mdc_packet(outfile, &sha_ctx, &aes_ctx);
+			} else {
+				logit("Did not read the complete input file.");
+				retval = -1;
+			}
+		}
 
 		EVP_CIPHER_CTX_cleanup(&aes_ctx);
 	}
+
 	return retval;
 }
 
@@ -3734,18 +3806,20 @@ get_public_encryption_key(const char * login, unsigned char * key, size_t * key_
 					*key_len = (*key_len + 7) / 8;
 					(*key_len)--;
 					key_ptr += 2;
-					assert(*(key_ptr++) == GPG_ECC_PUBKEY_PREFIX);
-					memcpy(key, key_ptr, *key_len);
-					compute_gpg_key_fingerprint(subkey_pkt, fp);
+					if (*(key_ptr++) == GPG_ECC_PUBKEY_PREFIX) {
+						memcpy(key, key_ptr, *key_len);
+						compute_gpg_key_fingerprint(subkey_pkt, fp);
 
-					sshbuf_free(subkey_pkt->data);
-					free(subkey_pkt);
-					retval = 0;
+						sshbuf_free(subkey_pkt->data);
+						free(subkey_pkt);
+						retval = 0;
+					} else {
+						logit("Invalid format for public encryption key - could not recover data.");
+					}
 				}
 				sshbuf_free(pubkey_pkt->data);
 				free(pubkey_pkt);
 			}
-
 			fclose(key_file);
 		}
 	}
@@ -3762,7 +3836,7 @@ get_public_encryption_key(const char * login, unsigned char * key, size_t * key_
  *
  *  @param fname Path of the file to encrypt
  *  @param enc_fname Output the path of the encrypted file - should point to at least PATH_MAX + 1 chars
- *  @return int - file number of the output file, or < 0 if error
+ *  @return int - file number of the output file, or negative number if error
  */
 int
 write_gpg_encrypted_file(const char * fname, int write_tmpfile, char * enc_fname)
@@ -3781,24 +3855,27 @@ write_gpg_encrypted_file(const char * fname, int write_tmpfile, char * enc_fname
 		if (outfile != NULL) {
 			unsigned char sym_key_frame[AES256_KEY_BYTES + AES_WRAP_BLOCK_SIZE];
 			int frame_len = generate_gpg_sym_key_frame(sym_key_frame);
-			assert(frame_len == sizeof(sym_key_frame));
-			retval = 0;
-			// Need to generate a "Public Key Encrypted Session Key Packet" for each of the recipients.
-			const gpg_public_key * recipient_key;
-			int recip_ct = get_recipients(&recipient_key);
-			for (int i = 0; retval == 0 && i < recip_ct; i++) {
-				gpg_message pkesk;
-				generate_gpg_pkesk_packet(recipient_key + i, sym_key_frame, sizeof(sym_key_frame), &pkesk);
-				retval = put_gpg_message(outfile, &pkesk);
-				sshbuf_free(pkesk.data);
-				pkesk.data = NULL;
-			}
-
-			if (retval == 0) {
-				retval = write_encrypted_data_file(infile, fname, outfile, sym_key_frame + 1);
-				if (retval == 0) {
-					retval = fileno(outfile);
+			if (frame_len == sizeof(sym_key_frame)) {
+				retval = 0;
+				// Need to generate a "Public Key Encrypted Session Key Packet" for each of the recipients.
+				const gpg_public_key * recipient_key;
+				int recip_ct = get_recipients(&recipient_key);
+				for (int i = 0; retval == 0 && i < recip_ct; i++) {
+					gpg_message pkesk;
+					generate_gpg_pkesk_packet(recipient_key + i, sym_key_frame, sizeof(sym_key_frame), &pkesk);
+					retval = put_gpg_message(outfile, &pkesk);
+					sshbuf_free(pkesk.data);
+					pkesk.data = NULL;
 				}
+
+				if (retval == 0) {
+					retval = write_encrypted_data_file(infile, fname, outfile, sym_key_frame + 1);
+					if (retval == 0) {
+						retval = fileno(outfile);
+					}
+				}
+			} else {
+				logit("Unable to generate key to encrypt data.");
 			}
 			fflush(outfile);
 			rewind(outfile);
@@ -3854,13 +3931,22 @@ write_gpg_decrypted_file(const char * login, const char * fname, char * dec_fnam
 			unsigned char * msg_ptr = msg;
 			if (*(msg_ptr++) == GPG_PKALGO_ECDH) {
 				const unsigned char *ephem_pk;
-				msg_ptr += extract_ephemeral_key(msg_ptr, &ephem_pk);
+				int ekey_offset = extract_ephemeral_key(msg_ptr, &ephem_pk);
+				if (ekey_offset < 0) {
+					fclose(infile);
+					return -1;
+				}
+				msg_ptr += ekey_offset;
 
 				unsigned char secret[crypto_box_BEFORENMBYTES];
 				generate_curve25519_shared_secret(sec_key, ephem_pk, secret);
 
 				unsigned char sym_key[AES256_KEY_BYTES];
-				extract_sym_key(msg_ptr, secret, key_fp, sym_key);
+				int rv = extract_sym_key(msg_ptr, secret, key_fp, sym_key);
+				if (rv < 0) {
+					fclose(infile);
+					return -2;
+				}
 
 				//  The next header we read after we processed all the PKESK packets should be the SEIPD
 				//  packet. After the header, there is a one byte version number, then encrypted data.
@@ -3868,46 +3954,51 @@ write_gpg_decrypted_file(const char * login, const char * fname, char * dec_fnam
 				//  Note that the encrypted data will always be long enough to output at least two blocks (32
 				//  bytes) in the first call to DecryptUpdate - the header + MDC packet is more than 32 bytes,
 				//  even if the file name is 1 character long and the file is empty.
-				assert(next_tag == GPG_TAG_SEIP_DATA);
 				unsigned char output[CHUNK_SIZE + 2 * AES_BLOCK_SIZE];
-
 				unsigned char seipd_ver = fgetc(infile);
-				assert(seipd_ver == GPG_SEIPD_VERSION);
+				if (next_tag == GPG_TAG_SEIP_DATA && seipd_ver == GPG_SEIPD_VERSION) {
+					SHA_CTX sha_ctx;
+					SHA1_Init(&sha_ctx);
 
-				SHA_CTX sha_ctx;
-				SHA1_Init(&sha_ctx);
+					EVP_CIPHER_CTX aes_ctx;
+					const EVP_CIPHER * aes_cipher = EVP_aes_256_cfb();
+					EVP_CIPHER_CTX_init(&aes_ctx);
+					if (EVP_DecryptInit_ex(&aes_ctx, aes_cipher, NULL /*dflt engine*/, sym_key,
+								NULL /*dflt iv*/)) {
+						int num_dec;
+						ssize_t len;
+						int extra;
+						char local_fname[PATH_MAX + 1];
+						int rv = process_enc_data_hdr(&sha_ctx, &aes_ctx, infile, output, local_fname, &num_dec,
+									   				  &len, &extra);
+						if (rv != 0) {
+							fclose(infile);
+							return -3;
+						}
 
-				EVP_CIPHER_CTX aes_ctx;
-				const EVP_CIPHER * aes_cipher = EVP_aes_256_cfb();
-				EVP_CIPHER_CTX_init(&aes_ctx);
-				if (EVP_DecryptInit_ex(&aes_ctx, aes_cipher, NULL /*dflt engine*/, sym_key,
-							NULL /*dflt iv*/)) {
-					int num_dec;
-					ssize_t len;
-					int extra;
-					char local_fname[PATH_MAX + 1];
-					unsigned char * optr = output + 
-						process_enc_data_hdr(&sha_ctx, &aes_ctx, infile, output, local_fname, &num_dec, &len, &extra);
+						unsigned char * optr = output + rv;
+						FILE * outfile = open_decrypted_output_file(local_fname, fname, dec_fname);
+						if (outfile != NULL) {
+							//  Flush remainder of output buffer that is file data. May still be some left that is
+							//  all or part of the MDC packet. 
+							fwrite(optr, 1, num_dec, outfile);
+							SHA1_Update(&sha_ctx, optr, num_dec);
+							len -= num_dec;
+							optr += num_dec;
 
-					char dec_fname[PATH_MAX + 1];
-					FILE * outfile = open_decrypted_output_file(local_fname, fname, dec_fname);
-					if (outfile != NULL) {
-						//  Flush remainder of output buffer that is file data. May still be some left that is
-						//  all or part of the MDC file. 
-						fwrite(optr, 1, num_dec, outfile);
-						SHA1_Update(&sha_ctx, optr, num_dec);
-						len -= num_dec;
+							retval = process_enc_data(&sha_ctx, &aes_ctx, infile, outfile, output, optr - output,
+									len, extra);
 
-						retval = process_enc_data(&sha_ctx, &aes_ctx, infile, outfile, output, optr - output,
-								len, extra);
-
-						if (retval == 0) {
-							fflush(outfile);
-							rewind(outfile);
-							retval = fileno(outfile);
+							if (retval == 0) {
+								fflush(outfile);
+								rewind(outfile);
+								retval = fileno(outfile);
+							}
 						}
 					}
 				}
+			} else {
+				logit("Invalid header on packet in data file - cannot recover data.");
 			}
 		}
 		fclose(infile);
