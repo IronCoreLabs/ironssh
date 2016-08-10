@@ -66,13 +66,15 @@
 #define GPG_MDC_PKT_LEN			22		//  Two byte tag + len, 20 byte SHA1 hash
 
 
-#define GPG_SECKEY_SUBDIR		"private-keys-v1.d"
-
+#define SSH_KEY_FNAME			"id_rsa"
+#define IRON_SSH_KEY_FNAME		"id_rsa.iron"
 #define GPG_PUBLIC_KEY_FNAME	"pubring.gpg"
+#define GPG_SECKEY_SUBDIR		"private-keys-v1.d"
 #define GPG_KEY_VERSION			4
 #define GPG_PKESK_VERSION		3		//  Current version for public key encrypted session key packets
 #define GPG_SEIPD_VERSION		1		//  Current version for symmetrically encrypted integrity protected data pkts
 
+#define MAX_PASSPHRASE_RETRIES	3		//  Number of times user is prompted to enter passphrase to access SSH key
 
 //  Some constants related to the header of a GPG message - the tag byte and length.
 #define GPG_TAG_MARKER_BIT		0x80	//  Tag byte should ALWAYS have high bit set
@@ -733,6 +735,16 @@ get_user_ssh_dir(const char * const login)
 	}
 }
 
+static int
+load_ssh_private_key(const char * ssh_key_file, const char * prompt, struct sshkey ** key, char ** comment)
+{
+	char * passphrase = read_passphrase(prompt, 0);
+	int retval = sshkey_load_private(ssh_key_file, passphrase, key, comment);
+	explicit_bzero(passphrase, strlen(passphrase));
+	free(passphrase);
+	return retval;
+}
+
 /**
  *  Read key from user's SSH key files.
  *
@@ -764,15 +776,14 @@ retrieve_ssh_key(const char * const ssh_dir, struct sshkey ** key, char ** comme
 #endif
 
 		char ssh_key_file[PATH_MAX + 1];
-		snprintf(ssh_key_file, PATH_MAX, "%sid_rsa", ssh_dir);
+		snprintf(ssh_key_file, PATH_MAX, "%s%s", ssh_dir, SSH_KEY_FNAME);
 		ssh_key_file[PATH_MAX] = '\0';
 
-		retval = sshkey_load_private(ssh_key_file, "", key, comment);
-		if (retval == SSH_ERR_KEY_WRONG_PASSPHRASE) {
-			char * passphrase = read_passphrase("Enter passphrase for SSH key file: ", 0);
-			retval = sshkey_load_private(ssh_key_file, passphrase, key, comment);
-			explicit_bzero(passphrase, strlen(passphrase));
-			free(passphrase);
+		int retry_ct = 0;
+		retval = load_ssh_private_key(ssh_key_file, "Enter passphrase for SSH key file: ", key, comment);
+		while (retval == SSH_ERR_KEY_WRONG_PASSPHRASE && retry_ct < MAX_PASSPHRASE_RETRIES) {
+			retval = load_ssh_private_key(ssh_key_file, "Incorrect passphrase - try again: ", key, comment);
+			retry_ct++;
 		}
 
 		//  If we succeeded in reading the private key, read the public key to get the comment field,
@@ -789,6 +800,8 @@ retrieve_ssh_key(const char * const ssh_dir, struct sshkey ** key, char ** comme
 				strncpy(cached_comment, *comment, COMMENT_MAX);
 				cached_comment[COMMENT_MAX] = '\0';
 			}
+		} else {
+			fprintf(stderr, "Unable to retrieve SSH key: %s\n\n", ssh_err(retval));
 		}
 	}
 	return retval;
@@ -3305,6 +3318,25 @@ generate_iron_keys(const char * const ssh_dir, const char * const login)
 {
 	int retval = -1;
 	if (ssh_dir != NULL && *ssh_dir) {
+		printf("\nYou do not appear to have IronCore keys in your .ssh directory\n"
+			   "(%s), so they will be generated them for you.\n\n"
+			   "To do this, you need to have an RSA key stored in ~/.ssh/%s.\n"
+			   "(This key should be protected by a passphrase!)\n"
+			   "Your %s file will be copied to ~/.ssh/%s, and your %s.pub\n"
+			   "file to ~/.ssh/%s.pub. The %s file will be opened to\n"
+			   "retrieve the RSA key. This may prompt you to enter your passphrase.\n"
+			   "Please do so.\n\n"
+			   "Once you have successfully entered your passphrase, the RSA key will be\n"
+			   "retrieved and used to create a new key file, ~/.ssh/%s.\n"
+			   "Your SSH RSA key will be added as the master key in that file, and a\n"
+			   "new encryption key will be generated and added as a subkey.\n\n"
+			   "These keys will be used to transparently encrypt any file that you upload\n"
+			   "(via 'put'), and to decrypt any file that you download (via 'get').\n\n"
+			   "Note that the new key files that are generated are compatible with GPG\n"
+			   "v. 2.1.14 and newer.\n\n",
+			   ssh_dir, SSH_KEY_FNAME, SSH_KEY_FNAME, IRON_SSH_KEY_FNAME, SSH_KEY_FNAME, IRON_SSH_KEY_FNAME,
+			   IRON_SSH_KEY_FNAME, GPG_PUBLIC_KEY_FNAME);
+
 		unsigned char pub_key[crypto_box_PUBLICKEYBYTES];
 		unsigned char sec_key[crypto_box_SECRETKEYBYTES];
 		crypto_box_keypair(pub_key, sec_key);
@@ -3314,6 +3346,8 @@ generate_iron_keys(const char * const ssh_dir, const char * const login)
 		char * comment;
 
 		if (retrieve_ssh_key(ssh_dir, &ssh_key, &comment) == 0) {
+			//if (copy_ssh_key_file(ssh_dir)
+
 			char file_name[PATH_MAX + 1];
 			snprintf(file_name, PATH_MAX, "%s%s", ssh_dir, GPG_PUBLIC_KEY_FNAME);
 			file_name[PATH_MAX] = '\0';
@@ -3338,7 +3372,13 @@ generate_iron_keys(const char * const ssh_dir, const char * const login)
 					char * passphrase = generate_gpg_passphrase_from_rsa(ssh_key);
 					if (write_secret_key_files(ssh_dir, ssh_key, pub_key, sizeof(pub_key), sec_key,
 								sizeof(sec_key), passphrase) == 0) {
-						printf("\nGenerated new GPG secret keys with the passphrase %s\n\n", passphrase);
+						printf("\nGenerated new GPG secret keys - they are protected with the passphrase\n"
+							   "    %s\n\n"
+							   "You will need this passphrase if you want to decrypt any '.iron' files\n"
+							   "directly with GPG. No need to store it, though - it is generated using\n"
+							   "your SSH RSA key, so you can use the iron-passphrase utility to generate\n"
+							   "it at any time. You just need to enter the passphrase for your RSA key.\n\n",
+							   passphrase);
 						free(passphrase);
 
 						if (write_trustdb_file(ssh_dir, key_fp, sizeof(key_fp), uid) == 0 ) {
@@ -3809,8 +3849,10 @@ check_iron_keys(const char * const login)
 				logit("Error checking %s - %s", file_name, strerror(errno));
 			}
 		}
-
+	} else {
+		logit("Unable to find .ssh directory for user %s\n", login);
 	}
+
 
 	return retval;
 }
