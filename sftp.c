@@ -2496,24 +2496,6 @@ main(int argc, char **argv)
 	}
 	freeargs(&args);
 
-	/* *** ICL Modification *** find user's login name for use during execution */
-	struct passwd * user_pw = getpwuid(getuid());
-	if (user_pw == NULL) {
-		fprintf(stderr, "Unable to determine current user's login\n");
-		usage();
-	} else {
-		user_login = xstrdup(user_pw->pw_name);
-	}
-
-	if (sodium_init() == -1) {
-		fatal("Couldn't initialise sodium library");
-	}
-
-	if (check_iron_keys(user_login) == -1) {
-		fatal("Couldn't find or generate secure file sharing keys.");
-	}
-	/* *** */
-
 	conn = do_init(in, out, copy_buffer_len, num_requests, limit_kbps);
 	if (conn == NULL)
 		fatal("Couldn't initialise connection to server");
@@ -2524,6 +2506,26 @@ main(int argc, char **argv)
 		else
 			fprintf(stderr, "Attached to %s.\n", sftp_direct);
 	}
+
+	/* *** ICL Modification *** find user's login name for use during execution, then initialize. This will
+	 * generate the GPG key files if they aren't there already.
+	 */
+	struct passwd * user_pw = getpwuid(getuid());
+	if (user_pw == NULL) {
+		fprintf(stderr, "Unable to determine current user's login\n");
+		usage();
+	} else {
+		user_login = xstrdup(user_pw->pw_name);
+	}
+
+	if (sodium_init() == -1) {
+		fatal("Couldn't initialize sodium library");
+	}
+
+	if (check_iron_keys(user_login) == -1) {
+		fatal("Couldn't find or generate secure file sharing keys.");
+	}
+	/* *** */
 
 	err = interactive_loop(conn, file1, file2);
 
