@@ -74,6 +74,37 @@
 #define GPG_SEIPD_VERSION		1		//  Current version for symmetrically encrypted integrity protected data pkts
 
 
+//  Some constants related to the header of a GPG message - the tag byte and length.
+#define GPG_TAG_MARKER_BIT		0x80	//  Tag byte should ALWAYS have high bit set
+#define GPG_TAG_FORMAT_BIT		0x40	//  Next bit of tag indicates old (0) or new (1) format 
+#define GPG_TAG_OF_MASK			0x3c	//  In old format, bits 2-5 are tag value
+#define GPG_TAG_OF_SHIFT		2		//  In old format, shift of last two bits (lentype) got get tag
+#define GPG_TAG_OF_LENTYPE_MASK	0x03	//  In old format, last two bits indicate type of following length
+#define GPG_TAG_NF_MASK			0x3f	//  In new format, low 6 bits are tag value
+#define GPG_TAG_NF_MASK			0x3f	//  In new format, low 6 bits are tag value
+#define GPG_OF_LENTYPE_SHORT	0
+#define GPG_OF_LENTYPE_MEDIUM	1
+#define GPG_OF_LENTYPE_LONG		2
+#define GPG_OF_LENTYPE_INDETERMINATE 3	//  Special size value to indicate length must be determined externally to pkt
+#define GPG_OF_LEN_SHORT		1
+#define GPG_OF_LEN_MEDIUM		2
+#define GPG_OF_LEN_LONG			4
+#define GPG_OF_LEN_INDETERMINATE -1		//  Special size value to indicate length must be determined externally to pkt
+#define GPG_NF_LEN_THRESHOLD1	0xc0	//  New format lengths shorter than 0xc0 (192) bytes are in one byte
+#define GPG_NF_LEN_SHORT		1
+#define GPG_NF_LEN_THRESHOLD2	0xe0	//  New format lengths that start with a value between 0xc0 and 0xdf (223)
+										//      are two bytes long
+#define GPG_NF_LEN_MEDIUM		2
+#define GPG_NF_LEN_LIMIT_MEDIUM 0x20c0	//  Maximum length that can be encoded into the medium (2-byte) format using
+										//		that goofy encoding algorithm
+#define GPG_NF_LEN_THRESHOLD4	0xff	//  New format lengths that start with a value of 0xff are five bytes
+										//		long - 0xff is ignored, and next four bytes are length
+#define GPG_NF_LEN_LONG			5
+#define GPG_NF_LEN_PARTIAL		1
+
+#define GPG_OF_TAG_LIMIT		15		//  Old format tags need to fit into 4 bits in tag byte
+#define GPG_NF_TAG_LIMIT		63		//  New format tags need to fit into 6 bits in tag byte
+
 /*  Tags used to indicate the types of GPG messages.  */
 typedef enum gpg_tag {
 	GPG_TAG_DO_NOT_USE			= 0,
@@ -399,6 +430,7 @@ extern char * user_login;
 //  Utility funcs
 static void		hex2str(const unsigned char * hex, int hex_len, char * str);
 static int		str2hex(const char * str, unsigned char * hex);
+static void		int_to_buf(int val, unsigned char * buf);
 static int		put_bignum(struct sshbuf * buf, const BIGNUM * bignum);
 static void		put_num_sexpr(struct sshbuf * buf, const unsigned char * bstr, int bstr_len);
 static void		populate_ssh_dir(const char * const login, char * ssh_dir);
@@ -581,6 +613,14 @@ str2hex(const char * str, unsigned char * hex)
 	return retval;
 }
 
+static void
+int_to_buf(int val, unsigned char * buf)
+{
+	buf[0] = (unsigned char) (val >> 24);
+	buf[1] = (unsigned char) (val >> 16);
+	buf[2] = (unsigned char) (val >> 8);
+	buf[3] = (unsigned char) val;
+}
 /**
  *  Write bignum to buffer.
  *
@@ -981,7 +1021,7 @@ compute_gpg_s2k_key(const char * passphrase, int key_len, const unsigned char * 
  *  Create a passphrase from an SSH RSA key
  *
  *  Generate a text passphrase to secure the GPG secret RSA key created from an SSH RSA key.
- *  Hash the RSA secret key 256 times (using SHA256), then uuencode the hash.
+ *  Hash the RSA secret key 256 times (using SHA256), then base64 encode the hash.
  *
  *  In order to retrieve the RSA secret key, the user needs the passphrase for the SSH key, so this
  *  should provide a reasonable level of security.
@@ -1003,6 +1043,7 @@ generate_gpg_passphrase_from_rsa(const struct sshkey * ssh_key)
 	SHA256_Final(digest, &ctx);
 
 	char str[SHA256_DIGEST_LENGTH * 4 / 3 + 3];
+	//  Don't be fooled by the name. This is actually a base64 encoding, not uuencoding.
 	uuencode(digest, sizeof(digest), str, sizeof(str));
 
 	return strdup(str);
@@ -1072,7 +1113,7 @@ compute_rsa_signature(const unsigned char * digest, size_t digest_len, const str
  *  the generation of a Key Encryption Key (KEK). This requires the fingerprint of the recipient's key and a
  *  shared point computed using Elliptic Curve Diffie Hellman (ECDH). The KEK is a SHA256 hash of these parameters
  *  plus some related info. We are using AES128 for the key encryption, so we just use use the first bytes of
- *  the has as the KEK.
+ *  the hash as the KEK.
  *
  *  @param fp Fingerprint of recipient's main (signing) key
  *  @param shared_point Output of ECDH algorithm given ephemeral secret key and recipient's public key
@@ -1114,9 +1155,9 @@ generate_gpg_kek(const unsigned char * fp, const unsigned char * shared_point, u
  *  @param buf S-expression to encrypt
  *  @param passphrase ASCII string used to generate AES key
  *  @param salt Place to write 8 bytes of salt that are generated
- *  @param iv Place to write initializatoin vector. At least GPG_SECKEY_IV_BYTES
+ *  @param iv Place to write initialization vector. At least GPG_SECKEY_IV_BYTES
  *  @param iv_len Num bytes to write into IV
- *  @return sshbuf * Buffer containing encrypted S-expression. Caller should sshbuf_free
+ *  @return sshbuf * Buffer containing encrypted S-expression, or NULL if error. Caller should sshbuf_free
  */
 static struct sshbuf *
 encrypt_gpg_sec_parms(const struct sshbuf * buf, const unsigned char * passphrase, unsigned char * salt,
@@ -1145,6 +1186,7 @@ encrypt_gpg_sec_parms(const struct sshbuf * buf, const unsigned char * passphras
 		obuf = sshbuf_new();
 		sshbuf_reserve(obuf, enc_len, &output);
 		retval = cipher_crypt(&ciphercontext, 0, output, input, enc_len, 0, 0);
+		free(input);
 		if (retval != 0) {
 			sshbuf_free(obuf);
 			obuf = NULL;
@@ -1275,23 +1317,21 @@ static int
 get_size_new_format(FILE *infile, ssize_t * size)
 {
 	int retval = -1;
-	unsigned char buf[4];
+	unsigned char buf[GPG_NF_LEN_LONG];
 
-	size_t num_read = fread(buf, 1, 1, infile);
-	if (num_read > 0) {
+	//  Read first byte of length to determine how many additional bytes there might be.
+	if (fread(buf, 1, 1, infile) == 1) {
 		unsigned char len_octet = buf[0];
-		if (len_octet < 192) {
+		if (len_octet < GPG_NF_LEN_THRESHOLD1) {
 			*size = len_octet;
 			retval = 0;
-		} else if (len_octet < 224) {
-			num_read = fread(buf, 1, 1, infile);
-			if (num_read > 0) {
-				*size = ((len_octet - 192) << 8) + buf[0] + 192;
+		} else if (len_octet < GPG_NF_LEN_THRESHOLD2) {
+			if (fread(buf, 1, 1, infile) == 1) {
+				*size = ((len_octet - GPG_NF_LEN_THRESHOLD1) << 8) + buf[0] + GPG_NF_LEN_THRESHOLD1;
 				retval = 0;
 			}
-		} else if (len_octet == 0xff) {
-			num_read = fread(buf, 1, 4, infile);
-			if (num_read == 4) {
+		} else if (len_octet == GPG_NF_LEN_THRESHOLD4) {
+			if (fread(buf, 1, 4, infile) == 4) {
 				*size = 0;
 				for (int i = 0; i < 4; i++) {
 					*size = (*size << 8) + buf[i];
@@ -1300,7 +1340,7 @@ get_size_new_format(FILE *infile, ssize_t * size)
 			}
 		} else {
 			// Partial body length
-			*size = 1 << (len_octet - 224);
+			*size = 1 << (len_octet - GPG_NF_LEN_THRESHOLD2);
 			retval = 0;
 		}
 	}
@@ -1313,6 +1353,8 @@ get_size_new_format(FILE *infile, ssize_t * size)
  *
  *  If a byte is an old-format GPG tag byte, extract the following length. The length of the size is encoded
  *  in the "length type" (last two bits of the tag byte).
+ *  NOTE: a length of GPG_OF_LENGTH_INDETERMINATE (-1) indicates that the caller must figure out the packet length
+ *  by some other means (the number of bytes left before EOF, typically).
  *
  *  @param infile File to read
  *  @param len_type Indicator of how long size is
@@ -1323,28 +1365,30 @@ static int
 get_size_old_format(FILE * infile, unsigned char len_type, ssize_t * size)
 {
 	int retval = -1;
-	unsigned char buf[4];
+	unsigned char buf[GPG_OF_LEN_LONG];
 	int num_octets;
 
-	switch (len_type) {
-		case 0: num_octets = 1; break;
-		case 1: num_octets = 2; break;
-		case 2: num_octets = 4; break;
-		case 3: num_octets = -1; break;
-	}
+	if (len_type <= GPG_TAG_OF_LENTYPE_MASK) {	//  Value is only supposed to be two bits
+		switch (len_type) {
+			case 0: num_octets = GPG_OF_LEN_SHORT; break;
+			case 1: num_octets = GPG_OF_LEN_MEDIUM; break;
+			case 2: num_octets = GPG_OF_LEN_LONG; break;
+			case 3: num_octets = GPG_OF_LEN_INDETERMINATE; break;
+		}
 
-	if (num_octets > 0) {
-		int num_read = fread(buf, sizeof(unsigned char), num_octets, infile);
-		if (num_read == num_octets) {
-			*size = 0;
-			for (int i = 0; i < num_octets; i++) {
-				*size = (*size << 8) + buf[i];
+		if (num_octets > 0) {
+			int num_read = fread(buf, sizeof(unsigned char), num_octets, infile);
+			if (num_read == num_octets) {
+				*size = 0;
+				for (int i = 0; i < num_octets; i++) {
+					*size = (*size << 8) + buf[i];
+				}
+				retval = 0;
 			}
+		} else {
+			*size = GPG_OF_LEN_INDETERMINATE;
 			retval = 0;
 		}
-	} else {
-		*size = -1;
-		retval = 0;
 	}
 
 	return retval;
@@ -1365,22 +1409,19 @@ get_tag_and_size(FILE * infile, gpg_tag * tag, ssize_t * size)
 
 	if (tag != NULL && size != NULL) {
 		unsigned char buf[4];
-
-		int num_read = fread(buf, 1, 1, infile);
-
-		if (num_read == 1) {
+		if (fread(buf, 1, 1, infile) == 1) {
 			unsigned char tag_byte = buf[0];
 
-			if ((tag_byte & 0x80) == 0x80) {
-				int new_format = tag_byte & 0x40;
+			if ((tag_byte & GPG_TAG_MARKER_BIT) == GPG_TAG_MARKER_BIT) {
+				int new_format = tag_byte & GPG_TAG_FORMAT_BIT;
 
 				if (new_format) {
-					*tag = (gpg_tag) (tag_byte & 0x3f);
+					*tag = (gpg_tag) (tag_byte & GPG_TAG_NF_MASK);
 					retval = get_size_new_format(infile, size);
 
 				} else {
-					*tag = (gpg_tag) ((tag_byte & 0x3c) >> 2);
-					retval = get_size_old_format(infile, (tag_byte & 0x03), size);
+					*tag = (gpg_tag) ((tag_byte & GPG_TAG_OF_MASK) >> GPG_TAG_OF_SHIFT);
+					retval = get_size_old_format(infile, (tag_byte & GPG_TAG_OF_LENTYPE_MASK), size);
 				}
 			}
 		}
@@ -1407,22 +1448,22 @@ extract_size_new_format(unsigned char * buf, ssize_t * size)
 {
 	int retval = -1;
 	unsigned char len_octet = buf[0];
-	if (len_octet < 192) {
+	if (len_octet < GPG_NF_LEN_THRESHOLD1) {
 		*size = len_octet;
-		retval = 1;
-	} else if (len_octet < 224) {
-		*size = ((len_octet - 192) << 8) + buf[1] + 192;
-		retval = 2;
-	} else if (len_octet == 0xff) {
+		retval = GPG_NF_LEN_SHORT;
+	} else if (len_octet < GPG_NF_LEN_THRESHOLD2) {
+		*size = ((len_octet - GPG_NF_LEN_THRESHOLD1) << 8) + buf[1] + GPG_NF_LEN_THRESHOLD1;
+		retval = GPG_NF_LEN_MEDIUM;
+	} else if (len_octet == GPG_NF_LEN_THRESHOLD4) {
 		*size = 0;
-		for (int i = 1; i < 5; i++) {
+		for (int i = 1; i < GPG_NF_LEN_LONG; i++) {
 			*size = (*size << 8) + buf[i];
 		}
-		retval = 5;
+		retval = GPG_NF_LEN_LONG;
 	} else {
 		// Partial body length
-		*size = 1 << (len_octet - 224);
-		retval = 1;
+		*size = 1 << (len_octet - GPG_NF_LEN_THRESHOLD2);
+		retval = GPG_NF_LEN_PARTIAL;
 	}
 
 	return retval;
@@ -1445,22 +1486,24 @@ extract_size_old_format(unsigned char * buf, unsigned char len_type, ssize_t * s
 	int retval = -1;
 	int num_octets;
 
-	switch (len_type) {
-		case 0: num_octets = 1; break;
-		case 1: num_octets = 2; break;
-		case 2: num_octets = 4; break;
-		case 3: num_octets = -1; break;
-	}
-
-	if (num_octets > 0) {
-		*size = 0;
-		for (int i = 0; i < num_octets; i++) {
-			*size = (*size << 8) + buf[i];
+	if (len_type <= GPG_TAG_OF_LENTYPE_MASK) {
+		switch (len_type) {
+			case 0: num_octets = GPG_OF_LEN_SHORT; break;
+			case 1: num_octets = GPG_OF_LEN_MEDIUM; break;
+			case 2: num_octets = GPG_OF_LEN_LONG; break;
+			case 3: num_octets = GPG_OF_LEN_INDETERMINATE; break;
 		}
-		retval = num_octets;
-	} else {
-		*size = -1;
-		retval = 0;
+
+		if (num_octets > 0) {
+			*size = 0;
+			for (int i = 0; i < num_octets; i++) {
+				*size = (*size << 8) + buf[i];
+			}
+			retval = num_octets;
+		} else {
+			*size = GPG_OF_LEN_INDETERMINATE;
+			retval = 0;
+		}
 	}
 
 	return retval;
@@ -1482,16 +1525,16 @@ extract_tag_and_size(unsigned char * buf, gpg_tag * tag, ssize_t * size)
 	if (tag != NULL && size != NULL) {
 		unsigned char tag_byte = buf[0];
 
-		if ((tag_byte & 0x80) == 0x80) {
-			int new_format = tag_byte & 0x40;
+		if ((tag_byte & GPG_TAG_MARKER_BIT) == GPG_TAG_MARKER_BIT) {
+			int new_format = tag_byte & GPG_TAG_FORMAT_BIT;
 
 			if (new_format) {
-				*tag = (gpg_tag) (tag_byte & 0x3f);
+				*tag = (gpg_tag) (tag_byte & GPG_TAG_NF_MASK);
 				retval = extract_size_new_format(buf + 1, size);
 
 			} else {
-				*tag = (gpg_tag) ((tag_byte & 0x3c) >> 2);
-				retval = extract_size_old_format(buf + 1, (tag_byte & 0x03), size);
+				*tag = (gpg_tag) ((tag_byte & GPG_TAG_OF_MASK) >> GPG_TAG_OF_SHIFT);
+				retval = extract_size_old_format(buf + 1, (tag_byte & GPG_TAG_OF_LENTYPE_MASK), size);
 			}
 		}
 	}
@@ -1507,54 +1550,55 @@ extract_tag_and_size(unsigned char * buf, gpg_tag * tag, ssize_t * size)
  *  @param tag Tag for packet
  *  @param size Length of packet body
  *  @param buf Place to write packet header
- *  @return int Num bytes written to buf, neagtive number if error
+ *  @return int Num bytes written to buf, negative number if error
  */
 static int
 generate_tag_and_size(gpg_tag tag, ssize_t size, unsigned char * buf)
 {
 	int len = -1;
 
-	if ((int) tag < 16) {
+	if ((int) tag <= GPG_OF_TAG_LIMIT) {
 		//  Tag small enough to fit into an old-format tag octet and length.
-		buf [0] = 0x80 | (tag << 2);
+		buf[0] = GPG_TAG_MARKER_BIT | (tag << GPG_TAG_OF_SHIFT);
 
 		if (size < 0) {
-			buf [0] |= 3;
-			len = 1;
+			buf[0] |= GPG_OF_LENTYPE_INDETERMINATE;
+			len = 1;		// Only tag byte - no length bytes
 		} else if (size <= 0xff) {
-			buf [1] = (unsigned char) size;
-			len = 2;
+			buf[0] |= GPG_OF_LENTYPE_SHORT;
+			buf[1] = (unsigned char) size;
+			len = GPG_OF_LEN_SHORT + 1;
 		} else if (size <= 0xffff) {
-			buf [0] |= 1;
+			buf[0] |= GPG_OF_LENTYPE_MEDIUM;
 			buf [1] = size >> 8;
-			buf [2] = size;
-			len = 3;
+			buf[2] = size;
+			len = GPG_OF_LEN_MEDIUM + 1;
 		} else if (size <= 0xffffffff) {
-			buf [0] |= 2;
-			buf [1] = size >> 24;
-			buf [2] = size >> 16;
-			buf [3] = size >> 8;
-			buf [4] = size;
-			len = 5;
+			buf[0] |= GPG_OF_LENTYPE_LONG;
+			buf[1] = size >> 24;
+			buf[2] = size >> 16;
+			buf[3] = size >> 8;
+			buf[4] = size;
+			len = GPG_OF_LEN_LONG + 1;
 		}
-	} else if ((int) tag < 64) {
+	} else if ((int) tag <= GPG_NF_TAG_LIMIT) {
 		//  Use a new-format tag octet and length.
-		buf [0] = 0xc0 | tag;
+		buf[0] = GPG_TAG_MARKER_BIT | GPG_TAG_FORMAT_BIT | tag;
 
-		if (size < 192) {
-			buf [1] = size;
-			len = 2;
-		} else if (size < 0x20c0) {
-			buf [1] = ((size - 192) >> 8) + 192;
-			buf [2] = ((size - 192) & 0xff);
-			len = 3;
-		} else if (size < 0x100000000) {
-			buf [1] = 0xff;
-			buf [2] = size >> 24;
-			buf [3] = size >> 16;
-			buf [4] = size >> 8;
-			buf [5] = size;
-			len = 6;
+		if (size < GPG_NF_LEN_THRESHOLD1) {
+			buf[1] = size;
+			len = GPG_NF_LEN_SHORT + 1;
+		} else if (size < GPG_NF_LEN_LIMIT_MEDIUM) {
+			buf[1] = ((size - GPG_NF_LEN_THRESHOLD1) >> 8) + GPG_NF_LEN_THRESHOLD1;
+			buf[2] = (size - GPG_NF_LEN_THRESHOLD1);
+			len = GPG_NF_LEN_MEDIUM + 1;
+		} else if (size <= 0xffffffff) {
+			buf[1] = GPG_NF_LEN_THRESHOLD4;
+			buf[2] = size >> 24;
+			buf[3] = size >> 16;
+			buf[4] = size >> 8;
+			buf[5] = size;
+			len = GPG_NF_LEN_LONG + 1;
 		}
 		//  Don't handle partial body length yet.
 	}
@@ -1605,6 +1649,17 @@ generate_gpg_rsa_pub_parms(const struct sshkey * ssh_key)
 	return pub_parms;
 }
 
+static void
+put_parm_in_sexpr(struct sshbuf * buf, char parm_name, BIGNUM * bn)
+{
+	unsigned char tmp[1024];
+	int len = BN_bn2bin(bn, tmp);
+	sshbuf_put(buf, "(1:", 3);
+	sshbuf_put_u8(buf, parm_name);
+	put_num_sexpr(buf, tmp, len);
+	sshbuf_put_u8(buf, ')');
+}
+
 /**
  *  Write RSA secret parameter S-expression to sshbuf.
  *
@@ -1616,26 +1671,18 @@ generate_gpg_rsa_pub_parms(const struct sshkey * ssh_key)
  *  p and q, that automagically changes iqmp to u, without any recomputation.
  *
  *  @param ssh_key RSA key
- *  @return sshbuf * Pointer to sshbuf containing S-expression. Caller should ssh_free.
+ *  @return sshbuf * Pointer to sshbuf containing S-expression, or NULL if error. Caller should ssh_free.
  */
 static struct sshbuf *
 generate_gpg_rsa_sec_parms(const struct sshkey * ssh_key)
 {
 	struct sshbuf * sec_parms = sshbuf_new();
-	unsigned char tmp[1024];
-	int len = BN_bn2bin(ssh_key->rsa->d, tmp);
-	sshbuf_put(sec_parms, "(1:d", 4);
-	put_num_sexpr(sec_parms, tmp, len);
-	len = BN_bn2bin(ssh_key->rsa->q, tmp);
-	sshbuf_put(sec_parms, ")(1:p", 5);
-	put_num_sexpr(sec_parms, tmp, len);
-	len = BN_bn2bin(ssh_key->rsa->p, tmp);
-	sshbuf_put(sec_parms, ")(1:q", 5);
-	put_num_sexpr(sec_parms, tmp, len);
-	len = BN_bn2bin(ssh_key->rsa->iqmp, tmp);
-	sshbuf_put(sec_parms, ")(1:u", 5);
-	put_num_sexpr(sec_parms, tmp, len);
-	sshbuf_put_u8(sec_parms, ')');
+	if (sec_parms != NULL) {
+		put_parm_in_sexpr(sec_parms, 'd', ssh_key->rsa->d);
+		put_parm_in_sexpr(sec_parms, 'p', ssh_key->rsa->q);	// The p-q swapperoo
+		put_parm_in_sexpr(sec_parms, 'q', ssh_key->rsa->p);	// The p-q swapperoo, part 2
+		put_parm_in_sexpr(sec_parms, 'u', ssh_key->rsa->iqmp);
+	}
 
 	return sec_parms;
 }
@@ -1644,8 +1691,11 @@ generate_gpg_rsa_sec_parms(const struct sshkey * ssh_key)
  *  Generate S-expression containing RSA parameters.
  *
  *  Creates the S-expression that contains each of the parameters of the RSA key - first the public key
- *  (n and e), then a nested S-expression containing the secret key (d, p, q, u). The later is encrypted
+ *  (n and e), then a nested S-expression containing the secret key (d, p, q, u). The latter is encrypted
  *  before writing into the final S-expression.
+ *
+ *  NOTE: The passphrase is ASCII instead of UTF-8 or some other more inclusive format because it is not
+ *  entered by the user, it is a base64-encoded hash of the RSA secret key plus salt.
  *
  *  @param ssh_key RSA key
  *  @param passphrase ASCII string used to protect encrypted portion
@@ -1658,57 +1708,59 @@ generate_gpg_rsa_seckey(const struct sshkey * ssh_key, const unsigned char * pas
 	 * exactly the same format as the subsequent string to write to the key, so for now we won't worry about
 	 * reusing pieces and parts.
 	 */
+	struct sshbuf * seckey = NULL;
 	char protected_at[PROTECTED_AT_LEN];
 
 	generate_gpg_protected_at(protected_at);
 
 	struct sshbuf * pub_parms = generate_gpg_rsa_pub_parms(ssh_key);
 	struct sshbuf * sec_parms = generate_gpg_rsa_sec_parms(ssh_key);
-
 	struct sshbuf * hash_str = sshbuf_new();
-
-	sshbuf_put(hash_str, "(3:rsa", 6);
-	sshbuf_putb(hash_str, pub_parms);
-	sshbuf_putb(hash_str, sec_parms);
-	sshbuf_put(hash_str, protected_at, strlen(protected_at));
-	sshbuf_put_u8(hash_str, ')');
-
-	unsigned char hash[SHA_DIGEST_LENGTH];
-	compute_gpg_sha1_hash_sshbuf(hash_str, hash);
-
 	struct sshbuf * sec_str = sshbuf_new();
-	sshbuf_put_u8(sec_str, '(');
-	sshbuf_put_u8(sec_str, '(');
-	sshbuf_putb(sec_str, sec_parms);
-	sshbuf_put_u8(sec_str, ')');
-	sshbuf_putf(sec_str, "(4:hash4:sha1%lu:", sizeof(hash));
-	sshbuf_put(sec_str, hash, sizeof(hash));
-	sshbuf_put_u8(sec_str, ')');
-	sshbuf_put_u8(sec_str, ')');
 
-	unsigned char salt[S2K_SALT_BYTES];
-	unsigned char iv[GPG_SECKEY_IV_BYTES];
-	struct sshbuf * enc_sec_parms = encrypt_gpg_sec_parms(sec_str, passphrase, salt, iv, sizeof(iv));
+	if (pub_parms != NULL && sec_parms != NULL && hash_str != NULL && sec_str != NULL) {
+		sshbuf_put(hash_str, "(3:rsa", 6);
+		sshbuf_putb(hash_str, pub_parms);
+		sshbuf_putb(hash_str, sec_parms);
+		sshbuf_put(hash_str, protected_at, strlen(protected_at));
+		sshbuf_put_u8(hash_str, ')');
 
-	struct sshbuf * seckey = sshbuf_new();
-	sshbuf_putf(seckey, "(21:protected-private-key(3:rsa");
-	sshbuf_putb(seckey, pub_parms);
-	sshbuf_put(seckey, GPG_SEC_PARM_PREFIX, strlen(GPG_SEC_PARM_PREFIX));
-	sshbuf_put(seckey, salt, sizeof(salt));
-	sshbuf_putf(seckey, "8:%d)16:", S2K_ITER_BYTE_COUNT);
-	sshbuf_put(seckey, iv, sizeof(iv));
-	sshbuf_putf(seckey, ")%lu:", sshbuf_len(enc_sec_parms));
-	sshbuf_put(seckey, sshbuf_ptr(enc_sec_parms), sshbuf_len(enc_sec_parms));
-	sshbuf_put_u8(seckey, ')');
-	sshbuf_put(seckey, protected_at, strlen(protected_at));
-	sshbuf_put_u8(seckey, ')');
-	sshbuf_put_u8(seckey, ')');
+		unsigned char hash[SHA_DIGEST_LENGTH];
+		compute_gpg_sha1_hash_sshbuf(hash_str, hash);
 
+		sshbuf_put(sec_str, "((", 2);
+		sshbuf_putb(sec_str, sec_parms);
+		sshbuf_put_u8(sec_str, ')');
+		sshbuf_putf(sec_str, "(4:hash4:sha1%lu:", sizeof(hash));
+		sshbuf_put(sec_str, hash, sizeof(hash));
+		sshbuf_put(sec_str, "))", 2);
+
+		unsigned char salt[S2K_SALT_BYTES];
+		unsigned char iv[GPG_SECKEY_IV_BYTES];
+		struct sshbuf * enc_sec_parms = encrypt_gpg_sec_parms(sec_str, passphrase, salt, iv, sizeof(iv));
+		if (enc_sec_parms != NULL) {
+			seckey = sshbuf_new();
+			if (seckey != NULL) {
+				sshbuf_putf(seckey, "(21:protected-private-key(3:rsa");
+				sshbuf_putb(seckey, pub_parms);
+				sshbuf_put(seckey, GPG_SEC_PARM_PREFIX, strlen(GPG_SEC_PARM_PREFIX));
+				sshbuf_put(seckey, salt, sizeof(salt));
+				sshbuf_putf(seckey, "8:%d)16:", S2K_ITER_BYTE_COUNT);
+				sshbuf_put(seckey, iv, sizeof(iv));
+				sshbuf_putf(seckey, ")%lu:", sshbuf_len(enc_sec_parms));
+				sshbuf_put(seckey, sshbuf_ptr(enc_sec_parms), sshbuf_len(enc_sec_parms));
+				sshbuf_put_u8(seckey, ')');
+				sshbuf_put(seckey, protected_at, strlen(protected_at));
+				sshbuf_put(seckey, "))", 2);
+			}
+			sshbuf_free(enc_sec_parms);
+		}
+	}
 	sshbuf_free(pub_parms);
 	sshbuf_free(sec_parms);
 	sshbuf_free(hash_str);
 	sshbuf_free(sec_str);
-	sshbuf_free(enc_sec_parms);
+
 	return seckey;
 }
 
@@ -3600,14 +3652,12 @@ generate_gpg_trustdb_version(unsigned char * rec)
 	*recp = GPG_TRUST_MODEL_PGP;       recp++;
 	*recp = GPG_TRUST_DFLT_MIN_CERT;   recp++;
 	/*  Skip reserved  */  			   recp += 2;
-	long tmp = htonl(gpg_now);
-	memcpy(recp, &tmp, sizeof(tmp));   recp += 4;
+	int_to_buf(gpg_now, recp);		   recp += 4;
 	/*  Leave next check 0  */ 		   recp += 4; 
 	/*  Skip reserved  */              recp += 8;
 	/*  Leave first free 0  */         recp += 4;
 	/*  Skip reserved  */              recp += 4;
-	tmp = htonl(1L);	/*  Rec # of start of hash table is 1  */
-	memcpy(recp, &tmp, sizeof(tmp));
+	int_to_buf(1, recp); 				/*  Rec # of start of hash table is 1  */
 }
 
 /**
@@ -3631,8 +3681,7 @@ generate_gpg_trustdb_trust(unsigned char * rec, const unsigned char * key, int k
 	/*  Leave depth 0 */  			   recp++;
 	/*  Leave min owner trust 0 */     recp++;
 	/*  Skip reserved  */  			   recp++;
-	long tmp = htonl(next_rec);
-	memcpy(recp, &tmp, sizeof(tmp));
+	int_to_buf(next_rec, recp);
 }
 
 /**
@@ -3971,7 +4020,7 @@ write_gpg_decrypted_file(const char * login, const char * fname, char * dec_fnam
 						char local_fname[PATH_MAX + 1];
 						int rv = process_enc_data_hdr(&sha_ctx, &aes_ctx, infile, output, local_fname, &num_dec,
 									   				  &len, &extra);
-						if (rv != 0) {
+						if (rv < 0) {
 							fclose(infile);
 							return -3;
 						}
@@ -4693,6 +4742,7 @@ mainline(int argc, char **argv)
 	int hash_len = sshbuf_len(sig1.data);
 	buf[0] = GPG_KEY_VERSION;
 	buf[1] = 0xff;
+	int_to_buf(hash_len, buf + 2);
 	buf[2] = (unsigned char) ((hash_len >> 24) & 0xff);
 	buf[3] = (unsigned char) ((hash_len >> 16) & 0xff);
 	buf[4] = (unsigned char) ((hash_len >> 8) & 0xff);

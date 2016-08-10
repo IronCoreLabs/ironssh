@@ -223,6 +223,7 @@ static const struct CMD cmds[] = {
 	{ "symlink",	I_SYMLINK,	REMOTE	},
 	{ "version",	I_VERSION,	NOARGS	},
 	{ "!",		I_SHELL,	NOARGS	},
+	{ "?",		I_HELP,		NOARGS	},
 	{ NULL,		-1,		-1	}
 };
 
