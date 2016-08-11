@@ -13,11 +13,11 @@
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
-
 #include <assert.h>
 #include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <libgen.h>
 #include <errno.h>
 #include <sys/types.h>
@@ -2127,11 +2127,14 @@ static int
 get_gpg_curve25519_seckey(const unsigned char * buf, int buf_len, const struct sshkey * ssh_key, unsigned char * d)
 {
 	int retval = -1;
-	size_t prefix_len = strlen(GPG_PUB_PARM_PREFIX);
 
-	unsigned char * ptr = memmem(buf, buf_len, GPG_PUB_PARM_PREFIX, prefix_len);
+	//  Need to find the start of the secret key params in the S-expression. Complicated by the fact
+	//  that the public key might contain binary data, so we need to skip over it to find the secret
+	//  key. We do rely on the fact that the first 'q' in the string should be the start of the public
+	//  key, and everything before that is ASCII.
+	unsigned char * ptr = memchr(buf, 'q', buf_len);
 	if (ptr != NULL) {
-		ptr += prefix_len;
+		ptr++;
 		int len = strtol(ptr, (char **) &ptr, 10);
 		ptr++;  // Skip ':'
 		if (*ptr != GPG_ECC_PUBKEY_PREFIX) {
@@ -2960,7 +2963,7 @@ open_rsa_seckey_file(const char * seckey_dir, const struct sshkey * ssh_key)
 
 	//  So much simpler than the curve25519 keygrip - an RSA keygrip is just a SHA1 hash of the public key
 	//  parameter n.
-	compute_gpg_sha1_hash_chars(tmp_n, n_len, keygrip);
+	compute_gpg_sha1_hash_chars(tmp_ptr, n_len, keygrip);
 	hex2str(keygrip, sizeof(keygrip), hexgrip);
 
 	char dir_name[512];
@@ -3255,8 +3258,10 @@ write_pubkey_file(const char * login, struct sshkey * ssh_key, const unsigned ch
 			if (infile != NULL) {
 				snprintf(tname, PATH_MAX, "%s/.pubkey.XXXXXX", pw->pw_dir);
 				tname[PATH_MAX] = '\0';
-				mktemp(tname);
-				outfile = fopen(tname, "w");
+				int fd = mkstemp(tname);
+				if (fd > 0) {
+					outfile = fdopen(fd, "w");
+				}
 				if (outfile != NULL) {
 					char line[3000];
 					while (fgets(line, sizeof(line), infile)) {
@@ -3569,7 +3574,6 @@ read_pubkey_file(const char * login, unsigned char * rsa_key, size_t * rsa_key_l
 			while (fgets(line, sizeof(line), infile)) {
 				char * lptr = line;
 				char * token;
-				size_t len;
 				if (strncmp(line, "iron-rsa:", 9) == 0) {
 					token = strsep(&lptr, " ");		// Skip initial "iron-rsa: "
 					token = strsep(&lptr, " ");
@@ -3578,7 +3582,7 @@ read_pubkey_file(const char * login, unsigned char * rsa_key, size_t * rsa_key_l
 					}
 					token = strsep(&lptr, " ");
 					if (rsa_fp != NULL) {
-						len = str2hex(token, rsa_fp);
+						str2hex(token, rsa_fp);
 					}
 					if (uid != NULL) {
 						token = strsep(&lptr, " ");
@@ -3594,7 +3598,7 @@ read_pubkey_file(const char * login, unsigned char * rsa_key, size_t * rsa_key_l
 					}
 					token = strsep(&lptr, " ");
 					if (rsa_fp != NULL) {
-						len = str2hex(token, cv25519_fp);
+						str2hex(token, cv25519_fp);
 					}
 					//  Ignore the uid on the subkey line
 					retval = 0;

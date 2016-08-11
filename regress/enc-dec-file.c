@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <string.h>
 #include <unistd.h>
 #include <pwd.h>
 #include "includes.h"
@@ -28,15 +29,18 @@ main(int argc, char **argv)
 	
 	char new_fname[PATH_MAX + 1];
 	snprintf(new_fname, PATH_MAX, "%s_XXXX", argv[1]);
-	if (mktemp(new_fname) == NULL) {
+	int fd = mkstemp(new_fname);
+	if (fd < 0) {
 		fprintf(stderr, "Unable to create temporary file name\n\n");
 		return -3;
 	}
 
+	unlink(new_fname);
 	if (link(argv[1], new_fname) < 0) {
 		fprintf(stderr, "Unable to create temporary link to file %s\n\n", argv[1]);
 		return -4;
 	}
+	close(fd);
 
 	char enc_fname[PATH_MAX + 1];
 	int outfd = write_gpg_encrypted_file(new_fname, 0, enc_fname);
