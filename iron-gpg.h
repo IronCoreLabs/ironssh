@@ -32,8 +32,6 @@
 
 
 extern int	check_iron_keys(const char * const login);
-extern int	get_public_encryption_key(const char * login, unsigned char * key, size_t * key_len,
-			   						  unsigned char * fp, unsigned char * signer_fp);
 extern int	write_gpg_encrypted_file(const char * fname, int write_tmpfile, char * enc_fname);
 extern int	write_gpg_decrypted_file(const char * login, const char * fname, char * dec_fname);
 

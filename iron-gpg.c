@@ -24,8 +24,9 @@
 #include "sftp-common.h"
 #include "openbsd-compat/openbsd-compat.h"
 #include "openssl/bn.h"
+#include "authfd.h"
 #include "authfile.h"
-#include "sshkey.h"
+#include "key.h"
 #include "ssherr.h"
 #include "cipher.h"
 #include "digest.h"
@@ -75,6 +76,8 @@
 #define GPG_SEIPD_VERSION		1		//  Current version for symmetrically encrypted integrity protected data pkts
 
 #define MAX_PASSPHRASE_RETRIES	3		//  Number of times user is prompted to enter passphrase to access SSH key
+#define PRE_ENC_PPHRASE_BYTES	33		//  Number of bytes of RSA signature to use as passphrase (pre-base64 encoding)
+#define PPHRASE_LEN				4 * ((PRE_ENC_PPHRASE_BYTES + 2) / 3)
 
 //  Some constants related to the header of a GPG message - the tag byte and length.
 #define GPG_TAG_MARKER_BIT		0x80	//  Tag byte should ALWAYS have high bit set
@@ -426,18 +429,20 @@ struct curve25519_param_entry curve25519_param[] = {
 
 extern char * user_login;
 
-/*  Forward function declaration for all static functions. Included here so we can arrange in groups regardless of
+/*  Forward function declaration for all static functions. Declared here so we can arrange in groups regardless of
  *  which functions call others.  */
 
 //  Utility funcs
 static void		hex2str(const unsigned char * hex, int hex_len, char * str);
-static int		str2hex(const char * str, unsigned char * hex);
+static int		str2hex(const char * str, unsigned char * hex, int hex_len);
 static void		int_to_buf(int val, unsigned char * buf);
 static int		put_bignum(struct sshbuf * buf, const BIGNUM * bignum);
 static void		put_num_sexpr(struct sshbuf * buf, const unsigned char * bstr, int bstr_len);
 static void		populate_ssh_dir(const char * const login, char * ssh_dir);
 static const char * get_user_ssh_dir(const char * const login);
-static int		retrieve_ssh_key(const char * const ssh_dir, struct sshkey ** key, char ** comment);
+static int		load_ssh_private_key(const char * ssh_key_file, const char * prompt, Key ** key);
+static int		retrieve_ssh_private_key(const char * ssh_dir, const char * prompt, Key ** key);
+static int		retrieve_ssh_key(const char * const ssh_dir, Key ** key, char ** comment);
 static char *	check_seckey_dir(const char * ssh_dir);
 static int		check_write_allowed(const char * out_name);
 static int		hashcrypt(SHA_CTX * sha_ctx, EVP_CIPHER_CTX * aes_ctx, const unsigned char * input, int size,
@@ -449,9 +454,9 @@ static void		compute_gpg_sha1_hash_sshbuf(const struct sshbuf * buf, unsigned ch
 static void		compute_gpg_sha1_hash_chars(const unsigned char * bstr, int bstr_len, unsigned char * hash);
 static void		compute_gpg_s2k_key(const char * passphrase, int key_len, const unsigned char * salt,
 									int bytes_to_hash, unsigned char * key);
-static char *	generate_gpg_passphrase_from_rsa(const struct sshkey * ssh_key);
+static int		generate_gpg_passphrase_from_rsa(const Key * ssh_key, char * passphrase);
 static void		compute_gpg_key_fingerprint(const gpg_message * pubkey_pkt, unsigned char * key_fp);
-static BIGNUM * compute_rsa_signature(const unsigned char * digest, size_t digest_len, const struct sshkey * key);
+static BIGNUM * compute_rsa_signature(const unsigned char * digest, size_t digest_len, const Key * key);
 static void		generate_gpg_kek(const unsigned char * fp, const unsigned char * shared_point, unsigned char * kek);
 static struct sshbuf * encrypt_gpg_sec_parms(const struct sshbuf * buf, const unsigned char * passphrase,
 	   										 unsigned char * salt, unsigned char * iv, size_t iv_len);
@@ -470,9 +475,10 @@ static int		extract_size_old_format(unsigned char * buf, unsigned char len_type,
 static int		extract_tag_and_size(unsigned char * buf, gpg_tag * tag, ssize_t * size);
 static int		generate_tag_and_size(gpg_tag tag, ssize_t size, unsigned char * buf);
 static void		generate_gpg_protected_at(char * str);
-static struct sshbuf * generate_gpg_rsa_pub_parms(const struct sshkey * ssh_key);
-static struct sshbuf * generate_gpg_rsa_sec_parms(const struct sshkey * ssh_key);
-static struct sshbuf * generate_gpg_rsa_seckey(const struct sshkey * ssh_key, const unsigned char * passphrase);
+static struct sshbuf * generate_gpg_rsa_pub_parms(const Key * ssh_key);
+static void		put_parm_in_sexpr(struct sshbuf * buf, char parm_name, BIGNUM * bn);
+static struct sshbuf * generate_gpg_rsa_sec_parms(const Key * ssh_key);
+static struct sshbuf * generate_gpg_rsa_seckey(const Key * ssh_key, const unsigned char * passphrase);
 static void		generate_gpg_curve25519_keygrip(const unsigned char * q, int q_len, unsigned char * grip);
 static struct sshbuf * generate_gpg_curve25519_pub_parms(const unsigned char * q, int q_len);
 static struct sshbuf * generate_gpg_curve25519_sec_parms(const unsigned char * d, int d_len);
@@ -485,11 +491,12 @@ static void		generate_curve25519_shared_secret(const unsigned char * sec_key, co
 												  unsigned char * secret);
 static int		encrypt_input_file(FILE * infile, FILE * outfile, SHA_CTX * sha_ctx, EVP_CIPHER_CTX * aes_ctx);
 
-static int		extract_curve25519_seckey(const unsigned char * enc_data, int len, const struct sshkey * ssh_key,
+static int		extract_gpg_rsa_pubkey(const struct sshbuf * buf, Key * rsa_key);
+static int		extract_curve25519_seckey(const unsigned char * enc_data, int len, const Key * rsa_key,
 	   					  				  const unsigned char * salt, int hash_bytes, const unsigned char * iv,
 										  unsigned char * d);
-static int		get_gpg_curve25519_seckey(const unsigned char * buf, int buf_len, const struct sshkey * ssh_key,
-	   									  unsigned char * d);
+static int		extract_gpg_curve25519_seckey(const unsigned char * buf, int buf_len, const Key * rsa_key,
+	   										  unsigned char * d);
 static int		extract_ephemeral_key(const unsigned char * msg, const unsigned char ** ephem_pk);
 static int		extract_sym_key(const unsigned char * msg, const unsigned char * secret, const unsigned char * fp,
 								unsigned char * sym_key);
@@ -499,11 +506,11 @@ static int		process_enc_data(SHA_CTX * sha_ctx, EVP_CIPHER_CTX * aes_ctx, FILE *
 								 unsigned char * output, int offset, ssize_t len, int extra);
 
 //  GPG packet generation funcs
-static void		generate_gpg_public_key_packet(const struct sshkey * ssh_key, gpg_message * msg);
+static void		generate_gpg_public_key_packet(const Key * ssh_key, gpg_message * msg);
 static void		generate_gpg_curve25519_subkey_packet(const unsigned char * pub_key, size_t pk_len, gpg_message * msg);
 static void		generate_gpg_user_id_packet(const char * user_id, gpg_message * msg);
 static void		generate_gpg_pk_uid_signature_packet(const gpg_message * pubkey_pkt, const gpg_message * uid_pkt,
-						                             const struct sshkey * key, int sig_class,
+						                             const Key * key, int sig_class,
 													 const unsigned char * key_id, gpg_message * msg);
 static void		generate_gpg_trust_packet(gpg_message * msg);
 static int		generate_gpg_pkesk_packet(const gpg_public_key * key, unsigned char * sym_key_frame, int frame_len, 
@@ -519,29 +526,34 @@ static int		get_gpg_pkesk_packet(FILE * infile, const char * key_id, unsigned ch
 	   								 int * next_len);
 
 //  GPG file manipulation funcs
-static FILE *	open_rsa_seckey_file(const char * seckey_dir, const struct sshkey * ssh_key);
+static FILE *	open_rsa_seckey_file(const char * seckey_dir, const Key * ssh_key);
 static FILE *	open_curve25519_seckey_file(const char * seckey_dir, const char * mode, const unsigned char * q,
 	   										int q_len);
 static FILE *	open_encrypted_output_file(const char * fname, char * enc_fname);
 static FILE *	open_decrypted_output_file(const char * fname, const char * local_path, char * dec_fname);
 
-static int		write_public_key_file(FILE * pub_file, const struct sshkey * ssh_key, const unsigned char * pub_subkey,
+static int		write_public_key_file(FILE * pub_file, const Key * ssh_key, const unsigned char * pub_subkey,
 							          const char * uid, unsigned char * key_fp, unsigned char * subkey_fp);
-static int		write_secret_key_files(const char * ssh_dir, const struct sshkey * ssh_key, const unsigned char * q,
+static int		write_secret_key_files(const char * ssh_dir, const Key * ssh_key, const unsigned char * q,
 	  								   int q_len, const unsigned char * d, int d_len, const char * passphrase);
+static int		write_rsa_key_to_pubkey(FILE * outfile, const Key * rsa_key, const unsigned char * fp,
+	   									const char * uid);
 static int		write_key_to_pubkey(FILE * outfile, const char * key_name, const unsigned char * pub_key, int len,
 									const unsigned char * fp, const char * uid);
-static int		write_pubkey_file(const char * login, struct sshkey * ssh_key, const unsigned char * pub_key,
-								  const char * uid, const unsigned char * key_fp, const unsigned char * subkey_fp);
+static int		write_pubkey_file(const char * login, Key * rsa_key, const unsigned char * key_fp,
+	   							  const unsigned char * subkey,const unsigned char * subkey_fp, 
+								  const char * uid);
 static int		generate_iron_keys(const char * const ssh_dir, const char * const login);
 static int		write_encrypted_data_file(FILE * infile, const char * fname, FILE * outfile, unsigned char * sym_key);
 
+static int		get_public_encryption_key(const char * login, unsigned char * key, size_t * key_len,
+										  unsigned char * fp, Key * rsa_key, unsigned char * rsa_fp);
 static int		get_encryption_key(const char * login, unsigned char * pub_key, size_t * pub_key_len,
 								   unsigned char * sec_key, size_t * sec_key_len, unsigned char * fp,
 								   unsigned char * signer_fp);
-static int		read_pubkey_file(const char * login, unsigned char * rsa_key, size_t * rsa_key_len,
-							   	 unsigned char * cv25519_key, size_t * cv25519_key_len, unsigned char * rsa_fp,
-								 unsigned char * cv25519_fp, char * uid);
+static int		read_pubkey_file(const char * login, Key * rsa_key, unsigned char * rsa_fp,
+								 unsigned char * cv25519_key, size_t * cv25519_key_len, unsigned char * cv25519_fp,
+								 char * uid);
 
 
 //  GPG trustdb file funcs
@@ -588,13 +600,15 @@ hex2str(const unsigned char * hex, int hex_len, char * str)
  *  Convert hex string to bytes.
  *
  *  Convert a string of ASCII hex chars into a byte array. String should have an even number of chars.
+ *  If the string is too long to fit into hex, returns error.
  *
  *  @param str String of ASCII hex
  *  @param hex Place to write byte array. Should point to strlen(str) / 2 bytes
+ *  @param hex_len Size of hex
  *  @return int Num bytes in hex, negative number if error
  */
 static int
-str2hex(const char * str, unsigned char * hex)
+str2hex(const char * str, unsigned char * hex, int hex_len)
 {
 	int retval = -1;
 	const char * ptr = str;
@@ -602,19 +616,29 @@ str2hex(const char * str, unsigned char * hex)
 	*hptr = '\0';
 
 	if ((strlen(str) % 2) == 0) {
-		while (*ptr) {
+		int ct = 0;
+		while (*ptr && ct < hex_len) {
 			unsigned int t;
 			if (sscanf(ptr, "%2x", &t) != 1) {
 				break;
 			}
 			ptr += 2;
 			*(hptr++) = t;
+			ct++;
 		}
-		retval = hptr - hex;
+		if (*ptr == '\0') {
+			retval = hptr - hex;
+		}
 	}
 	return retval;
 }
 
+/**
+ *  Write a four-byte integer into a byte array.
+ *
+ *  @param val Integer
+ *  @param buf Place to write val (at least 4 bytes)
+ */
 static void
 int_to_buf(int val, unsigned char * buf)
 {
@@ -623,6 +647,7 @@ int_to_buf(int val, unsigned char * buf)
 	buf[2] = (unsigned char) (val >> 8);
 	buf[3] = (unsigned char) val;
 }
+
 /**
  *  Write bignum to buffer.
  *
@@ -735,13 +760,53 @@ get_user_ssh_dir(const char * const login)
 	}
 }
 
+/**
+ *  Attempt to load SSH private key from specified file.
+ *
+ *  Prompt the user for the passphrase, then attempt to retrieve key.
+ *
+ *  @param ssh_key_file Name of file to read
+ *  @param prompt Text to display when asking user to enter passphrase
+ *  @param key Place to write recovered private key
+ *  @param comment Place to write comment associated with key
+ *  @return int 0 if successful, negative number if error
+ */
 static int
-load_ssh_private_key(const char * ssh_key_file, const char * prompt, struct sshkey ** key, char ** comment)
+load_ssh_private_key(const char * ssh_key_file, const char * prompt, Key ** key)
 {
 	char * passphrase = read_passphrase(prompt, 0);
-	int retval = sshkey_load_private(ssh_key_file, passphrase, key, comment);
+	int retval = sshkey_load_private(ssh_key_file, passphrase, key, NULL);
 	explicit_bzero(passphrase, strlen(passphrase));
 	free(passphrase);
+	return retval;
+}
+
+/**
+ *  Retrieve SSH private key from .ssh directory.
+ *
+ *  Includes retries if user enters incorrect passphrase.
+ *
+ *  @param ssh_dir Name of directory from which to read file
+ *  @param prompt String to display to user before reading passphrase ("" to suppress prompt and use no passphrase)
+ *  @param key Place to write SSH key read from file.  Caller shoudl sshkey_free
+ *  @returns int 0 if successful, negative number if error
+ */
+static int
+retrieve_ssh_private_key(const char * ssh_dir, const char * prompt, Key ** key)
+{
+	int retval;
+
+	char ssh_key_file[PATH_MAX + 1];
+	snprintf(ssh_key_file, PATH_MAX, "%s%s", ssh_dir, SSH_KEY_FNAME);
+	ssh_key_file[PATH_MAX] = '\0';
+
+	int retry_ct = 0;
+	retval = load_ssh_private_key(ssh_key_file, prompt, key);
+	while (retval == SSH_ERR_KEY_WRONG_PASSPHRASE && retry_ct < MAX_PASSPHRASE_RETRIES) {
+		retval = load_ssh_private_key(ssh_key_file, "Incorrect passphrase - try again: ", key);
+		retry_ct++;
+	}
+
 	return retval;
 }
 
@@ -758,52 +823,26 @@ load_ssh_private_key(const char * ssh_key_file, const char * prompt, struct sshk
  *  @param comment output comment read from public key file. Should point to at least COMMENT_MAX + 1 chars
  */
 static int
-retrieve_ssh_key(const char * const ssh_dir, struct sshkey ** key, char ** comment)
+retrieve_ssh_key(const char * const ssh_dir, Key ** key, char ** comment)
 {
-	int retval = -1;
-	static char cached_ssh_dir[PATH_MAX + 1] = "";
-	static struct sshkey cached_key;
-	static char cached_comment[COMMENT_MAX + 1];
+	int retval = retrieve_ssh_private_key(ssh_dir, "Enter passphrase for SSH key file: ", key);
 
-	if (strcmp(ssh_dir, cached_ssh_dir) == 0) {
-		*comment = strdup(cached_comment);
-		*key = malloc(sizeof(cached_key));
-		memcpy(*key, &cached_key, sizeof(cached_key));
-		retval = 0;
-	} else {
-#ifdef WITH_OPENSSL
-		OpenSSL_add_all_algorithms();
-#endif
+	//  If we succeeded in reading the private key, read the public key to get the comment field,
+	//  which will typically be the user's identification (i.e. email address)
+	if (retval == 0) {
+		Key * tmp_key;
 
 		char ssh_key_file[PATH_MAX + 1];
-		snprintf(ssh_key_file, PATH_MAX, "%s%s", ssh_dir, SSH_KEY_FNAME);
+		snprintf(ssh_key_file, PATH_MAX, "%s%s.pub", ssh_dir, SSH_KEY_FNAME);
 		ssh_key_file[PATH_MAX] = '\0';
-
-		int retry_ct = 0;
-		retval = load_ssh_private_key(ssh_key_file, "Enter passphrase for SSH key file: ", key, comment);
-		while (retval == SSH_ERR_KEY_WRONG_PASSPHRASE && retry_ct < MAX_PASSPHRASE_RETRIES) {
-			retval = load_ssh_private_key(ssh_key_file, "Incorrect passphrase - try again: ", key, comment);
-			retry_ct++;
-		}
-
-		//  If we succeeded in reading the private key, read the public key to get the comment field,
-		//  which will typically be the user's identification (i.e. email address)
+		retval = sshkey_load_public(ssh_key_file, &tmp_key, comment);
 		if (retval == 0) {
-			struct sshkey * tmp_key;
-
-			strncat(ssh_key_file, ".pub", PATH_MAX);
-			retval = sshkey_load_public(ssh_key_file, &tmp_key, comment);
-			if (retval == 0) {
-				strncpy(cached_ssh_dir, ssh_dir, PATH_MAX);
-				cached_ssh_dir[PATH_MAX] = '\0';
-				memcpy(&cached_key, *key, sizeof(struct sshkey));
-				strncpy(cached_comment, *comment, COMMENT_MAX);
-				cached_comment[COMMENT_MAX] = '\0';
-			}
-		} else {
-			fprintf(stderr, "Unable to retrieve SSH key: %s\n\n", ssh_err(retval));
+			sshkey_free(tmp_key);
 		}
+	} else {
+		fprintf(stderr, "Unable to retrieve SSH key: %s\n\n", ssh_err(retval));
 	}
+
 	return retval;
 }
 
@@ -1033,33 +1072,126 @@ compute_gpg_s2k_key(const char * passphrase, int key_len, const unsigned char * 
 /**
  *  Create a passphrase from an SSH RSA key
  *
- *  Generate a text passphrase to secure the GPG secret RSA key created from an SSH RSA key.
- *  Hash the RSA secret key 256 times (using SHA256), then base64 encode the hash.
+ *  Generate a text passphrase to secure the GPG secret keys created from an SSH RSA key. This is a
+ *  somewhat tricky proposition - we want to have the ability to generate this passphrase tied to the
+ *  ability to access the SSH key, and we want to take advantage of the ssh-agent's caching of private
+ *  key info. So we are going to hash the RSA public key, then attempt to sign it. This should send a
+ *  request to the ssh-agent, and if the agent isn't available or doesn't have the RSA key cached, should
+ *  prompt the user for the passphrase. The signature is as long as the RSA key, which is a lot. We take
+ *  the first 32 bytes of the passphrase and base64 encode them to form the passphrase.
  *
- *  In order to retrieve the RSA secret key, the user needs the passphrase for the SSH key, so this
- *  should provide a reasonable level of security.
- *
- *  @param ssh_key Struct containing the RSA key
+ *  @param rsa_key Byte array containing the public RSA key
+ *  @param passphrase Place to put generated passphrase (at least PPHRASE_LEN bytes)
+ *  @returns int 0 if successful, negative number if error
  */
-static char *
-generate_gpg_passphrase_from_rsa(const struct sshkey * ssh_key)
+static int
+generate_gpg_passphrase_from_rsa(const Key * rsa_key, char * passphrase)
 {
+	int retval = -1;
+
+	static int cached_n_len = -1;
+	static unsigned char cached_n[GPG_MAX_KEY_SIZE];
+	static int cached_e_len;
+	static unsigned char cached_e[GPG_MAX_KEY_SIZE];
+	static char cached_passphrase[PPHRASE_LEN + 1];
+
+	unsigned char n[GPG_MAX_KEY_SIZE];
+	int n_len = BN_bn2bin(rsa_key->rsa->n, n);
+	unsigned char e[GPG_MAX_KEY_SIZE];
+	int e_len = BN_bn2bin(rsa_key->rsa->e, e);
+
+	if (n_len == cached_n_len && e_len == cached_e_len &&
+		memcmp(cached_n, n, n_len) == 0 && memcmp(cached_e, e, e_len) == 0) {
+		strcpy(passphrase, cached_passphrase);
+		return 0;
+	}
+
 	SHA256_CTX ctx;
 	SHA256_Init(&ctx);
-	unsigned char tmp[1024];
-	int len = BN_bn2bin(ssh_key->rsa->d, tmp);
-	for (int ct = 0; ct < 256; ct++) {
-		SHA256_Update(&ctx, tmp, len);
-	}
+	SHA256_Update(&ctx, n, n_len);
+	SHA256_Update(&ctx, e, e_len);
 
 	unsigned char digest[SHA256_DIGEST_LENGTH];
 	SHA256_Final(digest, &ctx);
 
-	char str[SHA256_DIGEST_LENGTH * 4 / 3 + 3];
-	//  Don't be fooled by the name. This is actually a base64 encoding, not uuencoding.
-	uuencode(digest, sizeof(digest), str, sizeof(str));
+	//  Ask the agent to sign the hash. If the agent isn't running, retrieve the private key and sign the hash
+	//  in process (will prompt for passphrase for secret RSA key).
+	char signature[GPG_MAX_KEY_SIZE];
+	size_t sig_len;
+	int agent_fd;
 
-	return strdup(str);
+	if (ssh_get_authentication_socket(&agent_fd) == 0) {
+		unsigned char * sig_ptr;
+		if (ssh_agent_sign(agent_fd, (Key *) rsa_key, &sig_ptr, &sig_len, digest, SHA256_DIGEST_LENGTH,
+				   		   "rsa-sha2-256", 0) == 0) {
+			unsigned char * sptr = sig_ptr;
+			unsigned int len = 0;
+			for (int i = 0; i < 4; i++, sptr++) {
+				len = (len << 8) + *sptr;
+			}
+			sptr += len;
+			len = 0;
+			for (int i = 0; i < 4; i++, sptr++) {
+				len = (len << 8) + *sptr;
+			}
+			if ((sig_len - len) == (size_t) (sptr - sig_ptr)) {
+				//  Save off the signature portion for consistency with the RSA signing code below
+				memcpy(signature, sptr, len);
+				retval = 0;
+			} else {
+				logit("Unrecognized format for RSA signature. Unable to generate passphrase.");
+				retval = -2;
+			}
+			free(sig_ptr);
+		}
+	}
+   
+	if (retval == -1) {
+		//  No authentication agent, or the authentication agent didn't have the secret key, means we
+		//  need user's private key to sign the hash. If the private params are set in the provided sshkey,
+		//  just use them. Otherwise, need to fetch them from the user's private key file.
+		Key * key;
+		if (rsa_key->rsa->d == NULL) {
+			//  Private key not populated - fetch from file
+			const char * ssh_dir = get_user_ssh_dir(user_login);
+			if (ssh_dir != 0) {
+				retval = retrieve_ssh_private_key(ssh_dir, "To decrypt file, enter passphrase for SSH key: ", &key);
+				if (retval != 0) {
+					logit("Unable to retrieve SSH key: %s", ssh_err(retval));
+				}
+			} else {
+				key = NULL;
+				logit("Unable to retrieve SSH key - no .ssh dir for login %s", user_login);
+			}
+		} else {
+			key = (Key *) rsa_key;
+			retval = 0;
+		}
+
+		if (retval == 0) {
+			int len;
+			if (RSA_sign(NID_sha256, digest, SHA256_DIGEST_LENGTH, signature, &len, key->rsa) != 1) {
+				logit("Error generating signature for passphrase.");
+				retval = -1;
+			}
+		}
+		if (key != rsa_key) {
+			sshkey_free(key);
+		}
+	}
+
+	if (retval == 0) {
+		//  The "+ 1" on the lenght is for the null terminator.
+		uuencode(signature, PRE_ENC_PPHRASE_BYTES, passphrase, PPHRASE_LEN + 1);
+
+		cached_n_len = n_len;
+		cached_e_len = e_len;
+		memcpy(cached_n, n, n_len);
+		memcpy(cached_e, e, e_len);
+		strcpy(cached_passphrase, passphrase);
+	}
+
+	return retval;
 }
 
 /**
@@ -1101,7 +1233,7 @@ compute_gpg_key_fingerprint(const gpg_message * pubkey_pkt, unsigned char * key_
  *  @return BIGNUM * bignum containing the computed signature, NULL if error
  */
 static BIGNUM *
-compute_rsa_signature(const unsigned char * digest, size_t digest_len, const struct sshkey * key)
+compute_rsa_signature(const unsigned char * digest, size_t digest_len, const Key * key)
 {
 
 	size_t rsa_len = RSA_size(key->rsa);
@@ -1647,7 +1779,7 @@ generate_gpg_protected_at(char * str)
  *  @return sshbuf * Pointer to sshbuf containing S-expression. Caller should ssh_free.
  */
 static struct sshbuf *
-generate_gpg_rsa_pub_parms(const struct sshkey * ssh_key)
+generate_gpg_rsa_pub_parms(const Key * ssh_key)
 {
 	struct sshbuf * pub_parms = sshbuf_new();
 	unsigned char tmp[512];
@@ -1662,6 +1794,16 @@ generate_gpg_rsa_pub_parms(const struct sshkey * ssh_key)
 	return pub_parms;
 }
 
+/**
+ *  Write a parenthesize S-expression into buffer.
+ *
+ *  Given one of the parameters for a public or secret key (all of which have one-character names, like 'p' or 'n'),
+ *  generate a string like "(1:q5:@1234)".
+ *
+ *  @param buf Place to write S-expression
+ *  @param parm_name One-character name for parameter
+ *  @param bn Value to write for parameter
+ */
 static void
 put_parm_in_sexpr(struct sshbuf * buf, char parm_name, BIGNUM * bn)
 {
@@ -1687,7 +1829,7 @@ put_parm_in_sexpr(struct sshbuf * buf, char parm_name, BIGNUM * bn)
  *  @return sshbuf * Pointer to sshbuf containing S-expression, or NULL if error. Caller should ssh_free.
  */
 static struct sshbuf *
-generate_gpg_rsa_sec_parms(const struct sshkey * ssh_key)
+generate_gpg_rsa_sec_parms(const Key * ssh_key)
 {
 	struct sshbuf * sec_parms = sshbuf_new();
 	if (sec_parms != NULL) {
@@ -1715,7 +1857,7 @@ generate_gpg_rsa_sec_parms(const struct sshkey * ssh_key)
  *  @return sshbuf * Buffer containing S-expression. Caller should sshbuf_free
  */
 static struct sshbuf *
-generate_gpg_rsa_seckey(const struct sshkey * ssh_key, const unsigned char * passphrase)
+generate_gpg_rsa_seckey(const Key * ssh_key, const unsigned char * passphrase)
 {
 	/* First, we need to compute the hash of the key data. The string to be hashed is unfortunately not quite
 	 * exactly the same format as the subsequent string to write to the key, so for now we won't worry about
@@ -2053,6 +2195,48 @@ encrypt_input_file(FILE * infile, FILE * outfile, SHA_CTX * sha_ctx, EVP_CIPHER_
 }
 
 /**
+ *  Recover the RSA public key from pubkey packet body.
+ *
+ *  Will fill in the n and e parameters in the rsa_key.
+ *
+ *  @param buf Pubkey packet body
+ *  @param rsa_key Place to write recovered RSA public key. Caller needs to RSA_free rsa_key->rsa
+ *  @return int 0 if successful, -1 if error
+ */
+#define MIN_PUBKEY_PKT_LEN 14		//  version, 4-byte timestamp, algo, 2 2-byte MPI lengths, 2 2-byte MPIs
+
+static int
+extract_gpg_rsa_pubkey(const struct sshbuf * buf, Key * rsa_key)
+{
+	int retval = -1;
+	const unsigned char * ptr = sshbuf_ptr(buf);
+	int len = sshbuf_len(buf);
+	if (len >= MIN_PUBKEY_PKT_LEN) {
+		ptr += 5;					//  Skip version, 4-byte timestamp
+		if (*ptr == GPG_PKALGO_RSA_ES) {	//  Make sure the algorithm is what we expect
+			ptr++;
+			int key_len = (*ptr << 8) + *(ptr + 1);
+			ptr += 2;
+			key_len = (key_len + 7) / 8;	//  Convert from bites to bytes
+			if (key_len <= GPG_MAX_KEY_SIZE) {
+				rsa_key->rsa->n = BN_new();
+				BN_bin2bn(ptr, key_len, rsa_key->rsa->n);
+				ptr += key_len;
+				//  Now grab the e value (another MPI)
+				key_len = (*ptr << 8) + *(ptr + 1);
+				ptr += 2;
+				key_len = (key_len + 7) / 8;	//  Convert from bites to bytes
+				rsa_key->rsa->e = BN_new();
+				BN_bin2bn(ptr, key_len, rsa_key->rsa->e);
+				retval = 0;
+			}
+		}
+	}
+
+	return retval;
+}
+
+/**
  *  Recover cv25519 secret key from encrypted data
  *
  *  Unencrypt the block containing the cv25519 secret key parameters, given the SSH RSA key (to generate
@@ -2060,7 +2244,8 @@ encrypt_input_file(FILE * infile, FILE * outfile, SHA_CTX * sha_ctx, EVP_CIPHER_
  *
  *  @param enc_data Byte array containing encrypted key
  *  @param len Num bytes in enc_data
- *  @param ssh_key SSH RSA key used to protect the GPG key
+ *  @param rsa_pubkey RSA public key (used to generate passphrase that protects the GPG key)
+ *  @param rsa_pubkey_len Num bytes in rsa_pubkey
  *  @param salt Byte array of random salt
  *  @param hash_bytes Num bytes to run through S2K hash to generate key
  *  @param iv Byte array containing initialization vector (should be GPG_SECKEY_IV_LEN bytes)
@@ -2068,46 +2253,49 @@ encrypt_input_file(FILE * infile, FILE * outfile, SHA_CTX * sha_ctx, EVP_CIPHER_
  *  @return int Num bytes written to d, or negative number if error
  */
 static int
-extract_curve25519_seckey(const unsigned char * enc_data, int len, const struct sshkey * ssh_key,
-		const unsigned char * salt, int hash_bytes, const unsigned char * iv,
-		unsigned char * d)
+extract_curve25519_seckey(const unsigned char * enc_data, int len, const Key * rsa_pubkey,
+						  const unsigned char * salt, int hash_bytes, const unsigned char * iv,
+						  unsigned char * d)
 {
 	//  First, generate the passphrase from the ssh key and generate the symmetric key from that.
 	unsigned char sym_key[AES128_KEY_BYTES];
+	char passphrase[512];
 
-	char * passphrase = generate_gpg_passphrase_from_rsa(ssh_key);
-	compute_gpg_s2k_key(passphrase, sizeof(sym_key), salt, hash_bytes, sym_key);
-	free(passphrase);
-
-	struct sshcipher_ctx ciphercontext;
-	const struct sshcipher * cipher = cipher_by_name("aes128-cbc");
-	int retval = cipher_init(&ciphercontext, cipher, sym_key, sizeof(sym_key), iv, GPG_SECKEY_IV_BYTES,
-			CIPHER_DECRYPT);
-
+	int retval = generate_gpg_passphrase_from_rsa(rsa_pubkey, passphrase);
 	if (retval == 0) {
-		unsigned char * output = malloc(len);
-		retval = cipher_crypt(&ciphercontext, 0, output, enc_data, len, 0, 0);
+		compute_gpg_s2k_key(passphrase, sizeof(sym_key), salt, hash_bytes, sym_key);
+
+		struct sshcipher_ctx ciphercontext;
+		const struct sshcipher * cipher = cipher_by_name("aes128-cbc");
+		retval = cipher_init(&ciphercontext, cipher, sym_key, sizeof(sym_key), iv, GPG_SECKEY_IV_BYTES,
+							 CIPHER_DECRYPT);
+
 		if (retval == 0) {
-			if (strncmp(output, "(((1:d", 6) == 0) {
-				unsigned char * ptr = output + 6;
-				int len = strtoul(ptr, (char **) &ptr, 10);
+			unsigned char * output = malloc(len);
+			retval = cipher_crypt(&ciphercontext, 0, output, enc_data, len, 0, 0);
+			if (retval == 0) {
+				retval = -1;
+				if (strncmp(output, "(((1:d", 6) == 0) {
+					unsigned char * ptr = output + 6;
+					int len = strtoul(ptr, (char **) &ptr, 10);
 
-				if(*(ptr++) == ':') {
-					int pad_len = crypto_box_SECRETKEYBYTES - len;
-					if (pad_len > 0) {
-						memset(d, 0, pad_len);
+					if(*(ptr++) == ':') {
+						int pad_len = crypto_box_SECRETKEYBYTES - len;
+						if (pad_len > 0) {
+							memset(d, 0, pad_len);
+						}
+
+						memcpy(d + pad_len, ptr, len);
+						retval = len;
+					} else {
+						logit("Improperly formatted data in decrypted secret key - unable to process.");
 					}
-
-					memcpy(d + pad_len, ptr, len);
-					retval = len;
 				} else {
 					logit("Improperly formatted data in decrypted secret key - unable to process.");
 				}
-			} else {
-				logit("Improperly formatted data in decrypted secret key - unable to process.");
 			}
+			free(output);
 		}
-		free(output);
 	}
 
 	return retval;
@@ -2116,7 +2304,7 @@ extract_curve25519_seckey(const unsigned char * enc_data, int len, const struct 
 /**
  *  Recover cv25519 secret key from S-expression
  *
- *  Finds the part of the S-expressoin containing the secret key, decrypts it, and recovers the key.
+ *  Finds the part of the S-expression containing the secret key, decrypts it, and recovers the key.
  *
  *  @param buf Byte array containing S-expression
  *  @param ssh_key RSA key used to protect GPG key
@@ -2124,7 +2312,7 @@ extract_curve25519_seckey(const unsigned char * enc_data, int len, const struct 
  *  @return int Num bytes written to d, negative number if error
  */
 static int
-get_gpg_curve25519_seckey(const unsigned char * buf, int buf_len, const struct sshkey * ssh_key, unsigned char * d)
+extract_gpg_curve25519_seckey(const unsigned char * buf, int buf_len, const Key * ssh_key, unsigned char * d)
 {
 	int retval = -1;
 
@@ -2446,7 +2634,7 @@ process_enc_data(SHA_CTX * sha_ctx, EVP_CIPHER_CTX * aes_ctx, FILE * infile, FIL
  *  @param msg Place to write packet
  */
 static void
-generate_gpg_public_key_packet(const struct sshkey * ssh_key, gpg_message * msg)
+generate_gpg_public_key_packet(const Key * ssh_key, gpg_message * msg)
 {
 	msg->tag = GPG_TAG_PUBLIC_KEY;
 	msg->data = sshbuf_new();
@@ -2528,8 +2716,8 @@ generate_gpg_user_id_packet(const char * user_id, gpg_message * msg)
  */
 static void
 generate_gpg_pk_uid_signature_packet(const gpg_message * pubkey_pkt, const gpg_message * uid_pkt,
-									 const struct sshkey * key, int sig_class,
-									 const unsigned char * key_id, gpg_message * msg)
+									 const Key * key, int sig_class, const unsigned char * key_id,
+									 gpg_message * msg)
 {
 	msg->tag = GPG_TAG_SIGNATURE;
 	msg->data = sshbuf_new();
@@ -2945,7 +3133,7 @@ get_gpg_pkesk_packet(FILE * infile, const char * key_id, unsigned char * msg, gp
  *  @return FILE * File containing RSA secret key, opened for write
  */
 static FILE *
-open_rsa_seckey_file(const char * seckey_dir, const struct sshkey * ssh_key)
+open_rsa_seckey_file(const char * seckey_dir, const Key * ssh_key)
 {
 	unsigned char keygrip[SHA_DIGEST_LENGTH];
 	char hexgrip [2 * SHA_DIGEST_LENGTH + 1];
@@ -3086,7 +3274,7 @@ open_decrypted_output_file(const char * fname, const char * local_path, char * d
  *  @return int 0 if successful, negative number if error
  */
 static int
-write_public_key_file(FILE * pub_file, const struct sshkey * ssh_key, const unsigned char * pub_subkey,
+write_public_key_file(FILE * pub_file, const Key * ssh_key, const unsigned char * pub_subkey,
 					  const char * uid, unsigned char * key_fp, unsigned char * subkey_fp)
 {
 	int retval = -1;
@@ -3159,7 +3347,7 @@ write_public_key_file(FILE * pub_file, const struct sshkey * ssh_key, const unsi
  *  @return int 0 if successful, negative number if error
  */
 static int
-write_secret_key_files(const char * ssh_dir, const struct sshkey * ssh_key, const unsigned char * q, int q_len,
+write_secret_key_files(const char * ssh_dir, const Key * ssh_key, const unsigned char * q, int q_len,
 		   			   const unsigned char * d, int d_len, const char * passphrase)
 {
 	int retval = -1;
@@ -3185,6 +3373,40 @@ write_secret_key_files(const char * ssh_dir, const struct sshkey * ssh_key, cons
 			}
 		}
 		free(seckey_dir);
+	}
+	return retval;
+}
+
+/**
+ *  Write a line to the user's .pubkey file containing specified RSA key info.
+ *
+ *  Write the key name, public key n, public key e, fingerprint, and UID in one line to the file.
+ *  Writes the key name as "iron-rsa".
+ *
+ *  @param outfile File to which to write line
+ *  @param key RSA key to write as two hex strings (n and e)
+ *  @param fp Byte array containing key fingerprint. Converted to hax string
+ *	@param uid String identifying user (typically "Name <emailaddr>")
+ *  @return int 0 if successful, negative number if error
+ */
+static int
+write_rsa_key_to_pubkey(FILE * outfile, const Key * rsa_key, const unsigned char * fp, const char * uid)
+{
+	int retval = -1;
+
+	unsigned char pval[GPG_MAX_KEY_SIZE];
+	int plen;
+	unsigned char tmp[2 * GPG_MAX_KEY_SIZE + 1];
+	plen = BN_bn2bin(rsa_key->rsa->n, pval);
+	hex2str(pval, plen, tmp);
+	if (fprintf(outfile, "iron-rsa: %s ", tmp) > 0) {
+		plen = BN_bn2bin(rsa_key->rsa->e, pval);
+		hex2str(pval, plen, tmp);
+		fprintf(outfile, "%s ", tmp);
+		hex2str(fp, GPG_KEY_FP_LEN, tmp);
+		if (fprintf(outfile, "%s %s\n", tmp, uid) > 0) {
+			retval = 0;
+		}
 	}
 	return retval;
 }
@@ -3227,16 +3449,16 @@ write_key_to_pubkey(FILE * outfile, const char * key_name, const unsigned char *
  *  two entries.
  *
  *  @param login Login of user for which to write .pubkey
- *  @param ssh_key Params of RSA key to write to file (only need public param n)
- *  @param pub_key Public cv25519 key
+ *  @param rsa_key RSA key to write to file (only need public params n and e populated)
+ *  @param subkey Public cv25519 key
  *	@param uid String identifying user (typically "Name <emailaddr>")
  *	@param key_fp Byte array containing fingerprint for RSA key
  *	@param subkey_fp Byte array containing fingerprint for cv25519 key
  *  @return int 0 if successful, negative number if error
  */
 static int
-write_pubkey_file(const char * login, struct sshkey * ssh_key, const unsigned char * pub_key,
-				  const char * uid, const unsigned char * key_fp, const unsigned char * subkey_fp)
+write_pubkey_file(const char * login, Key * rsa_key, const unsigned char * key_fp, const unsigned char * subkey,
+				  const unsigned char * subkey_fp, const char * uid)
 {
 	int retval = -1;
 
@@ -3278,12 +3500,11 @@ write_pubkey_file(const char * login, struct sshkey * ssh_key, const unsigned ch
 		}
 
 		if (outfile != NULL) {
-			unsigned char tmp[GPG_MAX_KEY_SIZE];
-			int len = BN_bn2bin(ssh_key->rsa->n, tmp);
-			if (write_key_to_pubkey(outfile, "rsa", tmp, len, key_fp, uid) == 0) {
-				if (write_key_to_pubkey(outfile, "cv25519", pub_key, crypto_box_PUBLICKEYBYTES, subkey_fp,
+			if (write_rsa_key_to_pubkey(outfile, rsa_key, key_fp, uid) == 0) {
+				if (write_key_to_pubkey(outfile, "cv25519", subkey, crypto_box_PUBLICKEYBYTES, subkey_fp,
 						   				uid) == 0) {
 					fchmod(fileno(outfile), S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+					fclose(outfile);
 
 					if (shuffle_files) {
 						fclose(infile);
@@ -3347,7 +3568,7 @@ generate_iron_keys(const char * const ssh_dir, const char * const login)
 		crypto_box_keypair(pub_key, sec_key);
 		clamp_and_reverse_seckey(sec_key);
 
-		struct sshkey * ssh_key;
+		Key * ssh_key;
 		char * comment;
 
 		if (retrieve_ssh_key(ssh_dir, &ssh_key, &comment) == 0) {
@@ -3374,9 +3595,10 @@ generate_iron_keys(const char * const ssh_dir, const char * const login)
 				}
 
 				if (write_public_key_file(pub_file, ssh_key, pub_key, uid, key_fp, subkey_fp) == 0) {
-					char * passphrase = generate_gpg_passphrase_from_rsa(ssh_key);
-					if (write_secret_key_files(ssh_dir, ssh_key, pub_key, sizeof(pub_key), sec_key,
-								sizeof(sec_key), passphrase) == 0) {
+					char passphrase[512];
+					if ((generate_gpg_passphrase_from_rsa(ssh_key, passphrase) == 0) &&
+					    (write_secret_key_files(ssh_dir, ssh_key, pub_key, sizeof(pub_key), sec_key,
+								sizeof(sec_key), passphrase) == 0)) {
 						printf("\nGenerated new GPG secret keys - they are protected with the passphrase\n"
 							   "    %s\n\n"
 							   "You will need this passphrase if you want to decrypt any '.iron' files\n"
@@ -3384,10 +3606,9 @@ generate_iron_keys(const char * const ssh_dir, const char * const login)
 							   "your SSH RSA key, so you can use the iron-passphrase utility to generate\n"
 							   "it at any time. You just need to enter the passphrase for your RSA key.\n\n",
 							   passphrase);
-						free(passphrase);
 
 						if (write_trustdb_file(ssh_dir, key_fp, sizeof(key_fp), uid) == 0 ) {
-							if (write_pubkey_file(login, ssh_key, pub_key, uid, key_fp, subkey_fp) == 0) {
+							if (write_pubkey_file(login, ssh_key, key_fp, pub_key, subkey_fp, uid) == 0) {
 								retval = 0;
 							}
 						}
@@ -3476,7 +3697,7 @@ write_encrypted_data_file(FILE * infile, const char * fname, FILE * outfile, uns
 		fwrite(output, 1, outp - output, outfile);
 
 		int total_read = encrypt_input_file(infile, outfile, &sha_ctx, &aes_ctx);
-		if (total_read > 0) {
+		if (total_read >= 0) {
 		   	if ((off_t) total_read == statstr.st_size) {
 				retval = write_gpg_mdc_packet(outfile, &sha_ctx, &aes_ctx);
 			} else {
@@ -3492,11 +3713,90 @@ write_encrypted_data_file(FILE * infile, const char * fname, FILE * outfile, uns
 }
 
 /**
- *  Read public and secret key pair for login.
+ *  Retrieve public encryption key for specified login.
  *
- *  Retrieve the public and secret curve25519 encryption key pair for the specified user.
+ *  Attempt to read the public encryption key from the specified login's ~/.pubkey file. If that is not
+ *  available, read the public encryption subkey for the login from the ~<login>/.ssh/pubkey.gpg file.
+ *
+ *  @param login Name of the user for whom to find the key
+ *  @param key Place to put public portion of Curve25519 key (at least crypto_box_PUBLICKEYBYTES bytes)
+ *  @param key_len Place to put num bytes in key
+ *  @param fp Place to put fingerprint of Curve25519 key (at least GPG_KEY_FP_LEN bytes)
+ *  @param rsa_key Place to put public portion of RSA key. If NULL, skips retrieving
+ *  @param rsa_fp Place to put fingerprint of RSA key (at least GPG_KEY_FP_LEN bytes)
+ *  				If NULL, skips retrieving
+ *  @return int 0 if successful, negative number if error
+ */
+static int
+get_public_encryption_key(const char * login, unsigned char * key, size_t * key_len,
+						  unsigned char * fp, Key * rsa_key, unsigned char * rsa_fp)
+{
+	int retval = read_pubkey_file(login, rsa_key, rsa_fp, key, key_len, fp, NULL);
+
+	if (retval != 0) {		//  Couldn't get data from the user's .pubkey file - fetch from pubring.gpg
+		char key_file_name[PATH_MAX + 1];
+		FILE * key_file;
+
+		const char * ssh_dir = get_user_ssh_dir(login);
+		snprintf(key_file_name, PATH_MAX, "%s%s", ssh_dir, GPG_PUBLIC_KEY_FNAME);
+		key_file_name[PATH_MAX] = '\0';
+		key_file = fopen(key_file_name, "r");
+		if (key_file != NULL) {
+			retval = 0;
+
+			if (rsa_key != NULL || rsa_fp != NULL) {
+				//  Need to fetch something out of the public key (RSA key) packet
+				gpg_message * pubkey_pkt = get_pub_key_packet(key_file);
+				if (pubkey_pkt != NULL) {
+					if (rsa_key != NULL) {
+						retval = extract_gpg_rsa_pubkey(pubkey_pkt->data, rsa_key);
+					}
+					if (rsa_fp != NULL) {
+						compute_gpg_key_fingerprint(pubkey_pkt, rsa_fp);
+					}
+					sshbuf_free(pubkey_pkt->data);
+					free(pubkey_pkt);
+				} else {
+					retval = -1;
+				}
+			}
+			if (retval == 0 && (key != NULL || fp != NULL)) {
+				gpg_message * subkey_pkt = get_curve25519_key_packet(key_file);
+				if (subkey_pkt != NULL) {
+					const unsigned char * key_ptr = sshbuf_ptr(subkey_pkt->data) + sizeof(curve25519_oid) + 6;
+					*key_len = (*key_ptr << 8) + *(key_ptr + 1);
+					//  Size in bits from the header of the MPI - convert to bytes, then deduct leading 0x40
+					*key_len = (*key_len + 7) / 8;
+					(*key_len)--;
+					key_ptr += 2;
+					if (*(key_ptr++) == GPG_ECC_PUBKEY_PREFIX) {
+						memcpy(key, key_ptr, *key_len);
+						compute_gpg_key_fingerprint(subkey_pkt, fp);
+
+						sshbuf_free(subkey_pkt->data);
+						free(subkey_pkt);
+					} else {
+						logit("Invalid format for public encryption key - could not recover data.");
+						retval = -1;
+					}
+				} else {
+					retval = -1;
+				}
+			}
+			fclose(key_file);
+		}
+	}
+
+	return retval;
+}
+
+/**
+ *  Read public and secret key pair for user.
+ *
+ *  Retrieve the public and secret curve25519 encryption key pair for the specified user login.
  *  Need to retrieve the public key first. If that is successful, use it to find and open the secret
- *  key file, then retrieve the secret key from that file.
+ *  key file, then retrieve the secret key from that file. This requires the passphrase, so we need
+ *  to retrieve the RSA public key as well (it is used to generate the passphrase).
  *
  *  @param login Name of the user for whom to find the key
  *  @param pub_key Output - public part of curve25519 key. Should point to crypto_box_PUBLICKEYBYTES bytes
@@ -3510,34 +3810,66 @@ write_encrypted_data_file(FILE * infile, const char * fname, FILE * outfile, uns
 static int
 get_encryption_key(const char * login, unsigned char * pub_key, size_t * pub_key_len,
 				   unsigned char * sec_key, size_t * sec_key_len, unsigned char * fp,
-				   unsigned char * signer_fp)
+				   unsigned char * rsa_fp)
 {
 	int retval = -1;
 
-	if (get_public_encryption_key(login, pub_key, pub_key_len, fp, signer_fp) == 0) {
+	static char cached_login[MAX_LOGIN_LEN + 1] = { 0 }; 
+	static unsigned char cached_pub_key[crypto_box_PUBLICKEYBYTES];
+	static size_t cached_pub_key_len;
+	static unsigned char cached_sec_key[crypto_box_SECRETKEYBYTES];
+	static size_t cached_sec_key_len;
+	static unsigned char cached_fp[GPG_KEY_FP_LEN];
+	static unsigned char cached_rsa_fp[GPG_KEY_FP_LEN];
+
+
+	if (strcmp(cached_login, login) == 0) {
+		memcpy(pub_key, cached_pub_key, cached_pub_key_len);
+		*pub_key_len = cached_pub_key_len;
+		memcpy(sec_key, cached_sec_key, cached_sec_key_len);
+		*sec_key_len = cached_sec_key_len;
+		memcpy(fp, cached_fp, sizeof(cached_fp));
+		memcpy(rsa_fp, cached_rsa_fp, sizeof(cached_rsa_fp));
+		return 0;
+	}
+	
+	Key rsa_key;
+	bzero(&rsa_key, sizeof(rsa_key));
+	rsa_key.type = KEY_RSA;
+	rsa_key.rsa = RSA_new();
+	if (rsa_key.rsa == NULL) {
+		logit("Failed to allocate RSA key.");
+		return -1;
+	}
+
+	if (get_public_encryption_key(login, pub_key, pub_key_len, fp, &rsa_key, rsa_fp) == 0) {
 		const char * ssh_dir = get_user_ssh_dir(login);
 		char * seckey_dir = check_seckey_dir(ssh_dir);
 		if (seckey_dir != NULL) {
-			struct sshkey * ssh_key;
-			char * comment;
+			FILE * infile = open_curve25519_seckey_file(seckey_dir, "r", pub_key, *pub_key_len);
+			if (infile != NULL) {
+				unsigned char buf[4096];
 
-			if (retrieve_ssh_key(ssh_dir, &ssh_key, &comment) == 0) {
-				FILE * infile = open_curve25519_seckey_file(seckey_dir, "r", pub_key, *pub_key_len);
-				if (infile != NULL) {
-					unsigned char buf[4096];
-
-					int num_read = fread(buf, 1, sizeof(buf), infile);
-					*sec_key_len = get_gpg_curve25519_seckey(buf, num_read, ssh_key, sec_key);
-					if (*sec_key_len > 0) {
-						retval = 0;
-					}
-					fclose(infile);
+				int num_read = fread(buf, 1, sizeof(buf), infile);
+				retval = extract_gpg_curve25519_seckey(buf, num_read, &rsa_key, sec_key);
+				if (retval == 0) {
+					*sec_key_len = retval;
+					strncpy(cached_login, login, sizeof(cached_login));
+					cached_login[MAX_LOGIN_LEN] = '\0';
+					memcpy(cached_pub_key, pub_key, *pub_key_len);
+					cached_pub_key_len = *pub_key_len;
+					memcpy(cached_sec_key, sec_key, *sec_key_len);
+					cached_sec_key_len = *sec_key_len;
+					memcpy(cached_fp, fp, sizeof(cached_fp));
+					memcpy(cached_rsa_fp, rsa_fp, sizeof(cached_rsa_fp));
 				}
+				fclose(infile);
 			}
 
 			free(seckey_dir);
 		}
 	}
+	RSA_free(rsa_key.rsa);
 
 	return retval;
 }
@@ -3548,7 +3880,7 @@ get_encryption_key(const char * login, unsigned char * pub_key, size_t * pub_key
  *  Retrieve the IronCore public key entries from the specified login's .pubkey file.
  *
  *  @param login User whose key info to retrieve
- *  @param rsa_key Output - public portion of RSA key from .pubkey. Should point to at least 512 bytes
+ *  @param rsa_key Output - public portion of RSA key from .pubkey. Should point to at least GPG_MAX_KEY_SIZE bytes
  *  @param rsa_key_len Output - num bytes in rsa_key
  *  @param cv25519_key Output - public portion of Curve25519 key - at least crypto_box_SECRETKEYBYTES bytes
  *  @param cv25519_key_len Output - num bytes in cv25519_key
@@ -3558,10 +3890,10 @@ get_encryption_key(const char * login, unsigned char * pub_key, size_t * pub_key
  *  @return int 0 if successful, negative number if error
  */
 static int
-read_pubkey_file(const char * login, unsigned char * rsa_key, size_t * rsa_key_len, unsigned char * cv25519_key,
-				 size_t * cv25519_key_len, unsigned char * rsa_fp, unsigned char * cv25519_fp, char * uid)
+read_pubkey_file(const char * login, Key * rsa_key, unsigned char * rsa_fp, unsigned char * cv25519_key,
+	   			 size_t * cv25519_key_len, unsigned char * cv25519_fp, char * uid)
 {
-	int retval = -1;
+	int retval = 0;
 	struct passwd * pw = getpwnam(login);
 	if (pw != NULL) {
 		char fname[PATH_MAX + 1];
@@ -3576,32 +3908,63 @@ read_pubkey_file(const char * login, unsigned char * rsa_key, size_t * rsa_key_l
 				char * token;
 				if (strncmp(line, "iron-rsa:", 9) == 0) {
 					token = strsep(&lptr, " ");		// Skip initial "iron-rsa: "
-					token = strsep(&lptr, " ");
+					token = strsep(&lptr, " ");		// Next string should be the n value
 					if (rsa_key != NULL) {
-						*rsa_key_len = str2hex(token, rsa_fp);
+						unsigned char tval[GPG_MAX_KEY_SIZE];
+						int tlen = str2hex(token, tval, GPG_MAX_KEY_SIZE);
+
+						if (tlen > 0) {
+							rsa_key->rsa->n = BN_new();
+							BN_bin2bn(tval, tlen, rsa_key->rsa->n);
+							token = strsep(&lptr, " ");		// Next string should be the e value
+							int tlen = str2hex(token, tval, GPG_MAX_KEY_SIZE);
+							if (tlen > 0) {
+								rsa_key->rsa->e = BN_new();
+								BN_bin2bn(tval, tlen, rsa_key->rsa->e);
+							} else {
+								retval = -1;
+								break;
+							}
+						} else {
+							retval = -1;
+							break;
+						}
+					} else {
+						token = strsep(&lptr, " ");		// Skip the e value
 					}
 					token = strsep(&lptr, " ");
 					if (rsa_fp != NULL) {
-						str2hex(token, rsa_fp);
+						int fp_len = str2hex(token, rsa_fp, GPG_KEY_FP_LEN);
+						if (fp_len != GPG_KEY_FP_LEN) {
+							retval = -1;
+							break;
+						}
 					}
 					if (uid != NULL) {
 						token = strsep(&lptr, " ");
 						strncpy(uid, token, GPG_MAX_UID_LEN);
 						uid[GPG_MAX_UID_LEN] = '\0';
 					}
-					retval = 0;
 				} else if (strncmp(line, "iron-cv25519:", 13) == 0) {
 					token = strsep(&lptr, " ");		// Skip initial "iron-cv25519: "
 					token = strsep(&lptr, " ");
 					if (cv25519_key != NULL) {
-						*cv25519_key_len = str2hex(token, cv25519_key);
+						int klen = str2hex(token, cv25519_key, crypto_box_SECRETKEYBYTES);
+						if (klen >= 0) {
+							*cv25519_key_len = klen;
+						} else {
+							retval = -1;
+							break;
+						}
 					}
 					token = strsep(&lptr, " ");
 					if (rsa_fp != NULL) {
-						str2hex(token, cv25519_fp);
+						if (str2hex(token, cv25519_fp, GPG_KEY_FP_LEN) != GPG_KEY_FP_LEN) {
+							retval = -1;
+							break;
+						}
 					}
 					//  Ignore the uid on the subkey line
-					retval = 0;
 				}
 			}
 		}
@@ -3822,8 +4185,13 @@ write_trustdb_file(const char * ssh_dir, const unsigned char * key, size_t key_l
 int
 check_iron_keys(const char * const login)
 {
+#ifdef WITH_OPENSSL
+	OpenSSL_add_all_algorithms();
+#endif
+
 	int retval = -1;
 
+	gpg_now = time(NULL);
 	const char * ssh_dir = get_user_ssh_dir(login);
 	if (ssh_dir != NULL && *ssh_dir) {
 		char file_name[PATH_MAX + 1];
@@ -3862,67 +4230,6 @@ check_iron_keys(const char * const login)
 }
 
 /**
- *  Retrieve public encryption key for specified login.
- *
- *  Attempt to read the public encryption key from the specified login's ~/.pubkey file. If that is not
- *  available, read the public encryption subkey for the login from the ~<login>/.ssh/pubkey.gpg file.
- *
- *  @param login Name of the user for whom to find the key
- *  @param key Output - public portion of Curve25519 key. Should point to at least crypto_box_PUBLICKEYBYTES bytes
- *  @param key_len Output - num bytes in key
- *  @param fp Output - fingerprint of Curve25519 key. Should point to at least GPG_KEY_FP_LEN bytes
- *  @param signer_fp Output - fingerprint of RSA key. Should point to at least GPG_KEY_FP_LEN bytes
- *  @return int 0 if successful, negative number if error
- */
-int
-get_public_encryption_key(const char * login, unsigned char * key, size_t * key_len,
-						  unsigned char * fp, unsigned char * signer_fp)
-{
-	int retval = read_pubkey_file(login, NULL, NULL, key, key_len, signer_fp, fp, NULL);
-
-	if (retval != 0) {
-		char key_file_name[PATH_MAX + 1];
-		FILE * key_file;
-
-		const char * ssh_dir = get_user_ssh_dir(login);
-		snprintf(key_file_name, PATH_MAX, "%s%s", ssh_dir, GPG_PUBLIC_KEY_FNAME);
-		key_file_name[PATH_MAX] = '\0';
-		key_file = fopen(key_file_name, "r");
-		if (key_file != NULL) {
-			gpg_message * pubkey_pkt = get_pub_key_packet(key_file);
-			if (pubkey_pkt != NULL) {
-				compute_gpg_key_fingerprint(pubkey_pkt, signer_fp);
-
-				gpg_message * subkey_pkt = get_curve25519_key_packet(key_file);
-				if (subkey_pkt != NULL) {
-					const unsigned char * key_ptr = sshbuf_ptr(subkey_pkt->data) + sizeof(curve25519_oid) + 6;
-					*key_len = (*key_ptr << 8) + *(key_ptr + 1);
-					//  Size in bits from the header of the MPI - convert to bytes, then deduct leading 0x40
-					*key_len = (*key_len + 7) / 8;
-					(*key_len)--;
-					key_ptr += 2;
-					if (*(key_ptr++) == GPG_ECC_PUBKEY_PREFIX) {
-						memcpy(key, key_ptr, *key_len);
-						compute_gpg_key_fingerprint(subkey_pkt, fp);
-
-						sshbuf_free(subkey_pkt->data);
-						free(subkey_pkt);
-						retval = 0;
-					} else {
-						logit("Invalid format for public encryption key - could not recover data.");
-					}
-				}
-				sshbuf_free(pubkey_pkt->data);
-				free(pubkey_pkt);
-			}
-			fclose(key_file);
-		}
-	}
-
-	return retval;
-}
-
-/**
  *  Encrypt the specified file and write to new file.
  *
  *  Given the name of an input file, form an output file name by appending .iron, then generate the GPG
@@ -3936,8 +4243,13 @@ get_public_encryption_key(const char * login, unsigned char * key, size_t * key_
 int
 write_gpg_encrypted_file(const char * fname, int write_tmpfile, char * enc_fname)
 {
+#ifdef WITH_OPENSSL
+	OpenSSL_add_all_algorithms();
+#endif
+
 	int retval = -1;
 
+	gpg_now = time(NULL);
 	FILE * infile = fopen(fname, "r");
 	if (infile != NULL) {
 		FILE * outfile;
@@ -4010,6 +4322,11 @@ write_gpg_decrypted_file(const char * login, const char * fname, char * dec_fnam
 	unsigned char	key_fp[GPG_KEY_FP_LEN];
 	unsigned char	signing_key_fp[GPG_KEY_FP_LEN];
 
+#ifdef WITH_OPENSSL
+	OpenSSL_add_all_algorithms();
+#endif
+
+	gpg_now = time(NULL);
 	int retval = get_encryption_key(login, pub_key, &pk_len, sec_key, &sk_len, key_fp, signing_key_fp);
 	if (retval < 0) {
 		return retval;
@@ -4172,7 +4489,8 @@ add_recipient(const char * login)
 		strncpy(new_ent->login, login, MAX_LOGIN_LEN);
 		new_ent->login[MAX_LOGIN_LEN] = 0;
 		size_t key_len;
-		if (get_public_encryption_key(login, new_ent->key, &key_len, new_ent->fp, new_ent->signer_fp) == 0) {
+		if (get_public_encryption_key(login, new_ent->key, &key_len, new_ent->fp, NULL,
+				   					  new_ent->signer_fp) == 0) {
 			num_recipients++;
 		} else {
 			logit("Unable to retrieve public key information for user %s", login);
@@ -4813,7 +5131,7 @@ mainline(int argc, char **argv)
 	unsigned char key_fp[GPG_KEY_FP_LEN];
 	compute_gpg_key_fingerprint(&pk1, key_fp);
 
-	struct sshkey key;
+	Key key;
 	bzero(&key, sizeof(key));
 
 	key.type = KEY_RSA;
@@ -4887,29 +5205,28 @@ mainline(int argc, char **argv)
 
 	generate_gpg_rsa_seckey(&key, "abc123");
 
-
-	unsigned char fake_d[] = {
-		0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xde
-	};
-	struct sshkey fake_key;
+	Key fake_key;
 	bzero(&fake_key, sizeof(fake_key));
-
 	fake_key.type = KEY_RSA;
 	fake_key.rsa = RSA_new();
-	fake_key.rsa->d = BN_new();
-	BN_bin2bn(fake_d, sizeof(fake_d), fake_key.rsa->d);
-	char * pp = generate_gpg_passphrase_from_rsa(&fake_key);
+	fake_key.rsa->n = BN_new();
+	BN_bin2bn(n1, sizeof(n1), fake_key.rsa->n);
+	fake_key.rsa->e = BN_new();
+	BN_bin2bn(e, sizeof(e), fake_key.rsa->e);
+	char pp[512];
+	retval = generate_gpg_passphrase_from_rsa(&fake_key, pp);
+	assert(retval == 0);
 
+	/*
 	SHA256_CTX fake_ctx;
 	SHA256_Init(&fake_ctx);
-	for (int fake_ct = 0; fake_ct < 256; fake_ct++) {
-		SHA256_Update(&fake_ctx, fake_d, sizeof(fake_d));
-	}
+	SHA256_Update(&fake_ctx, n1, sizeof(n1));
 	unsigned char fake_dig[SHA256_DIGEST_LENGTH];
 	char fake_pp[50];
 	SHA256_Final(fake_dig, &fake_ctx);
 	uuencode(fake_dig, sizeof(fake_dig), fake_pp, sizeof(fake_pp));
 	assert(strcmp(pp, fake_pp) == 0);
+	*/
 
 	/*  A keypair generated by GPG.  */
 	static unsigned char pub_g[crypto_box_PUBLICKEYBYTES] = {
