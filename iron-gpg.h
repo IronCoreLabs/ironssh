@@ -31,12 +31,12 @@
 #define GPG_KEY_ID_OFFSET		(GPG_KEY_FP_LEN - GPG_KEY_ID_LEN)	//  Offset from start of fingerprint for ID
 
 
-extern int	check_iron_keys(const char * const login);
+extern int	check_iron_keys();
 extern int	write_gpg_encrypted_file(const char * fname, int write_tmpfile, char * enc_fname);
-extern int	write_gpg_decrypted_file(const char * login, const char * fname, char * dec_fname);
+extern int	write_gpg_decrypted_file(const char * fname, char * dec_fname);
 
-extern void reset_recipients();
-extern int  add_recipient(const char * login);
-extern int  remove_recipient(const char * login);
+extern void	reset_recipients();
+extern int	add_recipient(const char * login);
+extern int	remove_recipient(const char * login);
 
 #endif  /* _IRON_GPG_H */

@@ -52,7 +52,7 @@ main(int argc, char **argv)
 	close(outfd);
 	unlink(new_fname);
 	char dec_fname[PATH_MAX + 1];
-	int decfd = write_gpg_decrypted_file(user_login, enc_fname, dec_fname);
+	int decfd = write_gpg_decrypted_file(enc_fname, dec_fname);
 	if (decfd < 0) {
 		fprintf(stderr, "Unable to write decrypted file for input file %s\n\n", argv[1]);
 		return -6;

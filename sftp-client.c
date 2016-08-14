@@ -64,8 +64,6 @@
 extern volatile sig_atomic_t interrupted;
 extern int showprogress;
 
-extern char * user_login;	/* *** ICL Modification *** */
-
 /* Minimum amount of data to read at a time */
 #define MIN_READ_SIZE	512
 
@@ -1426,7 +1424,7 @@ do_download(struct sftp_conn *conn, const char *remote_path,
 		 *  (This name is embedded in the encrypted data).
 		 */
 		char dec_fname[PATH_MAX + 1];
-		int new_local_fd = write_gpg_decrypted_file(user_login, local_path, dec_fname);
+		int new_local_fd = write_gpg_decrypted_file(local_path, dec_fname);
 		if (new_local_fd > 0) {
 			close(local_fd);
 			unlink(local_path);

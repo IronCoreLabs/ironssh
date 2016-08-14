@@ -76,9 +76,6 @@ typedef void EditLine;
 
 /* *** ICL Modification *** */
 #include "iron-gpg.h"
-#include "sodium.h"
-
-char * user_login = NULL;
 /* *** */
 
 /* File to read commands from */
@@ -2507,22 +2504,8 @@ main(int argc, char **argv)
 			fprintf(stderr, "Attached to %s.\n", sftp_direct);
 	}
 
-	/* *** ICL Modification *** find user's login name for use during execution, then initialize. This will
-	 * generate the GPG key files if they aren't there already.
-	 */
-	struct passwd * user_pw = getpwuid(getuid());
-	if (user_pw == NULL) {
-		fprintf(stderr, "Unable to determine current user's login\n");
-		usage();
-	} else {
-		user_login = xstrdup(user_pw->pw_name);
-	}
-
-	if (sodium_init() == -1) {
-		fatal("Couldn't initialize sodium library");
-	}
-
-	if (check_iron_keys(user_login) == -1) {
+	/* *** ICL Modification ***  Generate the GPG key files if they aren't there already.  */
+	if (check_iron_keys() == -1) {
 		fatal("Couldn't find or generate secure file sharing keys.");
 	}
 	/* *** */
