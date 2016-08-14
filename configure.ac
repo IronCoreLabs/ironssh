@@ -2333,6 +2333,14 @@ if test "x$check_for_conflicting_getspnam" = "x1"; then
 	)
 fi
 
+# *** ICL Modification ***
+dnl check for sodium headers and libraries (required for ironsftp)
+AC_CHECK_HEADER([sodium.h], ,
+	AC_MSG_ERROR([The sodium library must be installed to build ironsftp]))
+AC_CHECK_LIB([sodium], [randombytes_buf], ,
+	[AC_MSG_ERROR([*** libsodium not available - required to build ironsftp])])
+# ***
+
 AC_FUNC_GETPGRP
 
 # Search for OpenSSL
