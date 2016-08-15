@@ -717,6 +717,21 @@ out:
 	return(err);
 }
 
+#ifdef IRONCORE
+char *
+iron_append(const char *p1)
+{
+	char *ret;
+	size_t len = strlen(p1) + IRON_SECURE_FILE_SUFFIX_LEN + 1;
+
+	ret = xmalloc(len);
+	strlcpy(ret, p1, len);
+	strlcat(ret, IRON_SECURE_FILE_SUFFIX, len);
+
+	return(ret);
+}
+#endif
+
 static int
 process_put(struct sftp_conn *conn, const char *src, const char *dst,
     const char *pwd, int pflag, int rflag, int resume, int fflag)
@@ -770,12 +785,11 @@ process_put(struct sftp_conn *conn, const char *src, const char *dst,
 		}
 
 #ifdef IRONCORE
-		/*  Append .iron extension to destination file name  */
+		/*  Append .iron extension to source file name  */
 		char iron_name[PATH_MAX + IRON_SECURE_FILE_SUFFIX_LEN + 1];
 		strcpy(iron_name, filename);
 		strcat(iron_name, IRON_SECURE_FILE_SUFFIX);
 #endif
-		
 		if (g.gl_matchc == 1 && tmp_dst) {
 			/* If directory specified, append filename */
 			if (dst_is_dir)
@@ -784,9 +798,12 @@ process_put(struct sftp_conn *conn, const char *src, const char *dst,
 #else
 				abs_dst = path_append(tmp_dst, filename);
 #endif
-
 			else
+#if IRONCORE
+				abs_dst = iron_append(tmp_dst);
+#else
 				abs_dst = xstrdup(tmp_dst);
+#endif
 		} else if (tmp_dst) {
 #if IRONCORE
 			abs_dst = path_append(tmp_dst, iron_name);
@@ -795,6 +812,7 @@ process_put(struct sftp_conn *conn, const char *src, const char *dst,
 #endif
 		} else {
 #if IRONCORE
+
 			abs_dst = make_absolute(xstrdup(iron_name), pwd);
 #else
 			abs_dst = make_absolute(xstrdup(filename), pwd);
