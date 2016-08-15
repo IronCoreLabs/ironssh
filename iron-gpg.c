@@ -74,6 +74,7 @@
 
 #define SSH_KEY_FNAME			"id_rsa"
 #define IRON_SSH_KEY_FNAME		"id_rsa.iron"
+#define SSH_KEY_PUB_EXT			".pub"
 #define GPG_PUBLIC_KEY_FNAME	"pubring.gpg"
 #define GPG_SECKEY_SUBDIR		"private-keys-v1.d"
 #define GPG_KEY_VERSION			4
@@ -451,11 +452,14 @@ static void		populate_ssh_dir(const char * const login, char * ssh_dir);
 static const char * get_user_ssh_dir(const char * const login);
 static int		load_ssh_private_key(const char * ssh_key_file, const char * prompt, Key ** key);
 static int		retrieve_ssh_private_key(const char * ssh_dir, const char * prompt, Key ** key);
+static int		retrieve_ssh_public_key(const char * ssh_dir, char ** comment);
 static int		retrieve_ssh_key(const char * const ssh_dir, Key ** key, char ** comment);
 static char *	check_seckey_dir(const char * ssh_dir);
 static int		check_write_allowed(const char * out_name);
 static int		hashcrypt(SHA_CTX * sha_ctx, EVP_CIPHER_CTX * aes_ctx, const unsigned char * input, int size,
 	   					  unsigned char * output);
+static void		reverse_byte_array(const unsigned char * src, unsigned char * dst, unsigned int len);
+static void		reverse_byte_array_in_place(unsigned char * arr, unsigned int len);
 
 //  GPG utility funcs
 static void		clamp_and_reverse_seckey(unsigned char * sk);
@@ -518,6 +522,7 @@ static int		process_enc_data(SHA_CTX * sha_ctx, EVP_CIPHER_CTX * aes_ctx, FILE *
 static void		generate_gpg_public_key_packet(const Key * ssh_key, gpg_message * msg);
 static void		generate_gpg_curve25519_subkey_packet(const unsigned char * pub_key, size_t pk_len, gpg_message * msg);
 static void		generate_gpg_user_id_packet(const char * user_id, gpg_message * msg);
+static void		populate_signature_header(struct sshbuf * body, int sig_class, gpg_tag pubkey_tag);
 static void		generate_gpg_pk_uid_signature_packet(const gpg_message * pubkey_pkt, const gpg_message * uid_pkt,
 						                             const Key * key, int sig_class,
 													 const unsigned char * key_id, gpg_message * msg);
@@ -825,27 +830,80 @@ load_ssh_private_key(const char * ssh_key_file, const char * prompt, Key ** key)
 /**
  *  Retrieve SSH private key from .ssh directory.
  *
- *  Includes retries if user enters incorrect passphrase.
+ *  if <ssh_dir>/id_rsa exists, copy it to <ssh_dir>/id_rsa.iron, then try to fetch the private key from the
+ *  id_rsa.iron file. Includes retries if user enters incorrect passphrase. 
  *
  *  @param ssh_dir Name of directory from which to read file
  *  @param prompt String to display to user before reading passphrase ("" to suppress prompt and use no passphrase)
- *  @param key Place to write SSH key read from file.  Caller shoudl sshkey_free
+ *  @param key Place to write SSH key read from file.  Caller should sshkey_free
  *  @returns int 0 if successful, negative number if error
  */
 static int
 retrieve_ssh_private_key(const char * ssh_dir, const char * prompt, Key ** key)
 {
-	int retval;
+	int retval = -1;
 
 	char ssh_key_file[PATH_MAX + 1];
 	snprintf(ssh_key_file, PATH_MAX, "%s%s", ssh_dir, SSH_KEY_FNAME);
-	ssh_key_file[PATH_MAX] = '\0';
 
-	int retry_ct = 0;
-	retval = load_ssh_private_key(ssh_key_file, prompt, key);
-	while (retval == SSH_ERR_KEY_WRONG_PASSPHRASE && retry_ct < MAX_PASSPHRASE_RETRIES) {
-		retval = load_ssh_private_key(ssh_key_file, "Incorrect passphrase - try again: ", key);
-		retry_ct++;
+	if (access(ssh_key_file, F_OK) == 0) {
+		char iron_key_file[PATH_MAX + 1];
+		snprintf(ssh_key_file, PATH_MAX, "%s%s", ssh_dir, IRON_SSH_KEY_FNAME);
+
+		char cp_cmd[2 * PATH_MAX + 5];   //  Room for "cp " and two file names, space-separated, with NULL term.
+		snprintf(cp_cmd, sizeof(cp_cmd), "cp %s %s", ssh_key_file, iron_key_file);
+		if (system(cp_cmd) == 0) {
+			int retry_ct = 0;
+			retval = load_ssh_private_key(ssh_key_file, prompt, key);
+			while (retval == SSH_ERR_KEY_WRONG_PASSPHRASE && retry_ct < MAX_PASSPHRASE_RETRIES) {
+				retval = load_ssh_private_key(ssh_key_file, "Incorrect passphrase - try again: ", key);
+				retry_ct++;
+			}
+		} else {
+			error("Cannot make copy of %s to %s.", ssh_key_file, iron_key_file);
+		}
+	} else {
+		error("Cannot find private key file %s.", ssh_key_file);
+	}
+
+	return retval;
+}
+
+/**
+ *  Retrieve SSH public key's comment from .ssh directory.
+ *
+ *  if <ssh_dir>/id_rsa.pub exists, copy it to <ssh_dir>/id_rsa.iron.pub, then try to fetch the public key
+ *  from the id_rsa.iron.pub file.
+ *
+ *  @param ssh_dir Name of directory from which to read file
+ *  @param comment Place to write comment string read from file. Caller should free
+ *  @returns int 0 if successful, negative number if error
+ */
+static int
+retrieve_ssh_public_key(const char * ssh_dir, char ** comment)
+{
+	int retval = -1;
+
+	char ssh_key_file[PATH_MAX + 1];
+	snprintf(ssh_key_file, PATH_MAX, "%s%s%s", ssh_dir, SSH_KEY_FNAME, SSH_KEY_PUB_EXT);
+
+	if (access(ssh_key_file, F_OK) == 0) {
+		char iron_key_file[PATH_MAX + 1];
+		snprintf(ssh_key_file, PATH_MAX, "%s%s%s", ssh_dir, IRON_SSH_KEY_FNAME, SSH_KEY_PUB_EXT);
+
+		char cp_cmd[2 * PATH_MAX + 5];   //  Room for "cp " and two file names, space-separated, with NULL term.
+		snprintf(cp_cmd, sizeof(cp_cmd), "cp %s %s", ssh_key_file, iron_key_file);
+		if (system(cp_cmd) == 0) {
+			Key * tmp_key;
+			retval = sshkey_load_public(iron_key_file, &tmp_key, comment);
+			if (retval == 0) {
+				sshkey_free(tmp_key);
+			}
+		} else {
+			error("Cannot make copy of %s to %s.", ssh_key_file, iron_key_file);
+		}
+	} else {
+		error("Cannot find public key file %s.", ssh_key_file);
 	}
 
 	return retval;
@@ -860,8 +918,8 @@ retrieve_ssh_private_key(const char * ssh_dir, const char * prompt, Key ** key)
  *  *** Currently only handles RSA files.
  *
  *  @param ssh_dir Path to user's ssh directory
- *  @param key output key read from file
- *  @param comment output comment read from public key file. Should point to at least COMMENT_MAX + 1 chars
+ *  @param key Place to write pointer to key read from file. Caller should sshkey_free
+ *  @param comment Place to write pointer to comment read from public key file. Caller should free
  */
 static int
 retrieve_ssh_key(const char * const ssh_dir, Key ** key, char ** comment)
@@ -871,17 +929,7 @@ retrieve_ssh_key(const char * const ssh_dir, Key ** key, char ** comment)
 	//  If we succeeded in reading the private key, read the public key to get the comment field,
 	//  which will typically be the user's identification (i.e. email address)
 	if (retval == 0) {
-		Key * tmp_key;
-
-		char ssh_key_file[PATH_MAX + 1];
-		snprintf(ssh_key_file, PATH_MAX, "%s%s.pub", ssh_dir, SSH_KEY_FNAME);
-		ssh_key_file[PATH_MAX] = '\0';
-		retval = sshkey_load_public(ssh_key_file, &tmp_key, comment);
-		if (retval == 0) {
-			sshkey_free(tmp_key);
-		}
-	} else {
-		fprintf(stderr, "Unable to retrieve SSH key: %s\n\n", ssh_err(retval));
+		retval = retrieve_ssh_public_key(ssh_dir, comment);
 	}
 
 	return retval;
@@ -958,6 +1006,35 @@ hashcrypt(SHA_CTX * sha_ctx, EVP_CIPHER_CTX * aes_ctx, const unsigned char * inp
 	return num_written;
 }
 
+/**
+ *  Swap order of bytes in one byte array into a second array.
+ *
+ *  @param src Input byte array
+ *  @param dst Place to write reversed byte array (at least len bytes)
+ *  @param len Num bytes in src
+ */
+static void
+reverse_byte_array(const unsigned char * src, unsigned char * dst, unsigned int len) {
+	for (unsigned int i = 0; i < len; i++) {
+		dst[i] = src[len - 1 - i];
+	}
+}
+
+/**
+ *  Swap order of bytes in a byte array in place
+ *
+ *  @param arr Byte array
+ *  @param len Num bytes in arr
+ */
+static void
+reverse_byte_array_in_place(unsigned char * arr, unsigned int len) {
+	for (unsigned int ct = 0; ct < len / 2; ct++) {
+		unsigned int ct2 = len - 1 - ct;
+		unsigned char tmp = arr[ct];
+		arr[ct]  = arr[ct2];
+		arr[ct2] = tmp;
+	}
+}
 
 //================================================================================
 //  GPG utility funcs
@@ -985,14 +1062,7 @@ clamp_and_reverse_seckey(unsigned char * sk)
 	sk[crypto_box_SECRETKEYBYTES - 1] &= 0x7f;
 	sk[crypto_box_SECRETKEYBYTES - 1] |= 0x40;
 	sk[0] &= 0xf8;
-
-	//  Reverse the whole key in place.
-	for (unsigned int ct = 0; ct < crypto_box_SECRETKEYBYTES / 2; ct++) {
-		unsigned int ct2 = crypto_box_SECRETKEYBYTES - 1 - ct;
-		unsigned char tmp = sk[ct];
-		sk[ct]  = sk[ct2];
-		sk[ct2] = tmp;
-	}
+	reverse_byte_array_in_place(sk, crypto_box_SECRETKEYBYTES);
 }
 
 /**
@@ -1929,7 +1999,7 @@ generate_gpg_rsa_seckey(const Key * ssh_key, const unsigned char * passphrase)
 				sshbuf_putb(seckey, pub_parms);
 				sshbuf_put(seckey, GPG_SEC_PARM_PREFIX, strlen(GPG_SEC_PARM_PREFIX));
 				sshbuf_put(seckey, salt, sizeof(salt));
-				sshbuf_putf(seckey, "8:%d)16:", S2K_ITER_BYTE_COUNT);
+				sshbuf_putf(seckey, "8:%08d)%d:", S2K_ITER_BYTE_COUNT, (int) sizeof(iv));
 				sshbuf_put(seckey, iv, sizeof(iv));
 				sshbuf_putf(seckey, ")%lu:", sshbuf_len(enc_sec_parms));
 				sshbuf_put(seckey, sshbuf_ptr(enc_sec_parms), sshbuf_len(enc_sec_parms));
@@ -2086,7 +2156,7 @@ generate_gpg_curve25519_seckey(const unsigned char * q, int q_len, const unsigne
 	sshbuf_putb(seckey, pub_parms);
 	sshbuf_put(seckey, GPG_SEC_PARM_PREFIX, strlen(GPG_SEC_PARM_PREFIX));
 	sshbuf_put(seckey, salt, sizeof(salt));
-	sshbuf_putf(seckey, "8:%d)16:", S2K_ITER_BYTE_COUNT);
+	sshbuf_putf(seckey, "8:%d)%d:", S2K_ITER_BYTE_COUNT, (int) sizeof(iv));
 	sshbuf_put(seckey, iv, sizeof(iv));
 	sshbuf_putf(seckey, ")%lu:", sshbuf_len(enc_sec_parms));
 	sshbuf_put(seckey, sshbuf_ptr(enc_sec_parms), sshbuf_len(enc_sec_parms));
@@ -2110,9 +2180,11 @@ generate_gpg_curve25519_seckey(const unsigned char * q, int q_len, const unsigne
  *  random AES256 key, then put it into the "frame" that will actually be encrypted using the public key
  *  algorithm. Since we are using curve25519, a variant of ECDH, the frame is just the symmetric key
  *  algorithm followed by the key value followed by a two-byte checksum of the key. This frame is then
- *  padded out to a multiple of eight bytes, which means adding five bytes of 0x05 at the end.
+ *  padded out to a multiple of eight bytes, which means adding n bytes of n to the end. (For our case,
+ *  n will be 5).
  *
- *  @param sym_key_frame Place to write generated frame. Should point to at least AES256_KEY_BYTES + AES_WRAP_BLOCK_SIZE bytes
+ *  @param sym_key_frame Place to write generated frame. Should point to at least AES256_KEY_BYTES +
+ *  					 AES_WRAP_BLOCK_SIZE bytes
  *  @return int number of bytes in generated frame
  */
 static int
@@ -2130,9 +2202,13 @@ generate_gpg_sym_key_frame(unsigned char * sym_key_frame)
 	*(frame_ptr++) = (cksum >> 8);
 	*(frame_ptr++) = cksum;
 
-	//  Add padding.
-	for (i = 0; i < 5; i++) {
-		*(frame_ptr++) = 0x05;
+	//  Need to buffer to full AES_WRAP_BLOCK_SIZE block. Padding byte value is just the number of bytes
+	//  of padding required. (Don't blame me, not my choice.)
+	int num_to_pad = AES_WRAP_BLOCK_SIZE - (frame_ptr - sym_key_frame) % AES_WRAP_BLOCK_SIZE;
+	if (num_to_pad != AES_WRAP_BLOCK_SIZE) {
+		for (i = 0; i < num_to_pad; i++) {
+			*(frame_ptr++) = num_to_pad;
+		}
 	}
 
 	return (frame_ptr - sym_key_frame);
@@ -2142,7 +2218,7 @@ generate_gpg_sym_key_frame(unsigned char * sym_key_frame)
  *  Create ephemeral (random) key pair and compute shared secret for recipient.
  *
  *  Choose an ephemeral Curve25519 key pair (random value for secret and the corresponding public point),
- *  then multiple the secret value by the recipient's public key. This is standard ECDH.
+ *  then multiply the secret value by the recipient's public key. This is standard ECDH.
  *
  *  @param recip_pk Public Curve25519 key of recipient
  *  @param ephem_pk Place to write ephemeral public key. Should point to crypto_box_PUBLICKEYBYTES bytes
@@ -2179,9 +2255,7 @@ generate_curve25519_shared_secret(const unsigned char * sec_key, const unsigned 
 								  unsigned char * secret)
 {
 	unsigned char tseckey[crypto_box_SECRETKEYBYTES];
-	for (unsigned int i = 0; i < crypto_box_SECRETKEYBYTES; i++) {
-		tseckey[i] = sec_key[crypto_box_SECRETKEYBYTES - 1 - i];
-	}
+	reverse_byte_array(sec_key, tseckey, crypto_box_SECRETKEYBYTES);
 	crypto_scalarmult_curve25519(secret, tseckey, pub_key);
 }
 
@@ -2306,9 +2380,10 @@ extract_curve25519_seckey(const unsigned char * enc_data, int len, const Key * r
 				retval = -1;
 				if (strncmp(output, "(((1:d", 6) == 0) {
 					unsigned char * ptr = output + 6;
-					int len = strtoul(ptr, (char **) &ptr, 10);
-
-					if(*(ptr++) == ':') {
+					errno = 0;
+					unsigned long len = strtoul(ptr, (char **) &ptr, 10);
+					if (errno != EINVAL && errno != ERANGE && len <= (crypto_box_SECRETKEYBYTES + 2) &&
+							*(ptr++) == ':') {
 						int pad_len = crypto_box_SECRETKEYBYTES - len;
 						if (pad_len > 0) {
 							memset(d, 0, pad_len);
@@ -2317,10 +2392,10 @@ extract_curve25519_seckey(const unsigned char * enc_data, int len, const Key * r
 						memcpy(d + pad_len, ptr, len);
 						retval = len;
 					} else {
-						logit("Improperly formatted data in decrypted secret key - unable to process.");
+						error("Improperly formatted data in decrypted secret key - unable to process.");
 					}
 				} else {
-					logit("Improperly formatted data in decrypted secret key - unable to process.");
+					error("Improperly formatted data in decrypted secret key - unable to process.");
 				}
 			}
 			free(output);
@@ -2352,10 +2427,12 @@ extract_gpg_curve25519_seckey(const unsigned char * buf, int buf_len, const Key 
 	unsigned char * ptr = memchr(buf, 'q', buf_len);
 	if (ptr != NULL) {
 		ptr++;
+		errno = 0;
 		int len = strtol(ptr, (char **) &ptr, 10);
 		ptr++;  // Skip ':'
-		if (*ptr != GPG_ECC_PUBKEY_PREFIX) {
-			logit("Invalid format - unable to retrieve secret key.");
+		if (errno == EINVAL || errno == ERANGE || len <= 0 || len > (int) (crypto_box_SECRETKEYBYTES + 2) ||
+					*(ptr++) != GPG_ECC_PUBKEY_PREFIX) {
+			error("Invalid format - unable to retrieve secret key.");
 			return -1;
 		}
 		ptr += len;
@@ -2372,9 +2449,10 @@ extract_gpg_curve25519_seckey(const unsigned char * buf, int buf_len, const Key 
 
 		//  Get the hash byte count - skip the "8:" preceding
 		ptr += 2;
+		errno = 0;
 		int hash_bytes = strtol(ptr, (char **) &ptr, 10);
-		if (strncmp(ptr, ")16:", 4) != 0) {
-			logit("Invalid format - unable to retrieve secret key.");
+		if (errno == EINVAL || errno == ERANGE || strncmp(ptr, ")16:", 4) != 0) {
+			error("Invalid format - unable to retrieve secret key.");
 			return -3;
 		}
 		ptr += 4;
@@ -2385,14 +2463,14 @@ extract_gpg_curve25519_seckey(const unsigned char * buf, int buf_len, const Key 
 		ptr += sizeof(iv);
 
 		if (*(ptr++) != ')') {
-			logit("Invalid format - unable to retrieve secret key.");
+			error("Invalid format - unable to retrieve secret key.");
 			return -4;
 		}
+		errno = 0;
 		len = strtol(ptr, (char **) &ptr, 10);
 		ptr++;  // Skip ':'
-
-		if (((ptr - buf) + len) >= buf_len - 1) {
-			logit("Invalid format - unable to retrieve secret key.");
+		if (errno == EINVAL || errno == ERANGE || ((ptr - buf) + len) >= buf_len - 1) {
+			error("Invalid format - unable to retrieve secret key.");
 			return -5;
 		}
 
@@ -2402,7 +2480,7 @@ extract_gpg_curve25519_seckey(const unsigned char * buf, int buf_len, const Key 
 
 		ptr += len;
 		if (*ptr != ')') {
-			logit("Invalid format - unable to retrieve secret key.");
+			error("Invalid format - unable to retrieve secret key.");
 			return -6;
 		}
 	}
@@ -2471,10 +2549,12 @@ extract_sym_key(const unsigned char * msg, const unsigned char * secret, const u
 	int enc_frame_len = *(msg++);
 	int frame_len = decrypt_gpg_key_frame(msg, enc_frame_len, kek, frame);
 	if (frame_len == sizeof(frame) && *frame == GPG_SKALGO_AES256) {
+		//  The first byte of the frame is the encryption algorithm - skip.
 		memcpy(sym_key, frame + 1, AES256_KEY_BYTES);
+		//  Add one to the encrypted frame length to account for the byte before the frame that contained the length
 		retval = enc_frame_len + 1;
 	} else {
-		logit("Unable to recover symmetric key - cannot recover data.");
+		error("Unable to recover symmetric key - cannot recover data.");
 	}
 
 	return retval;
@@ -2500,24 +2580,33 @@ static int
 process_enc_data_hdr(SHA_CTX * sha_ctx, EVP_CIPHER_CTX * aes_ctx, FILE * infile,
 					 unsigned char * output, char * fname, int * num_dec, ssize_t * len, int * extra)
 {
+//  After the header for the SEIPD packet and the one byte version number, there should be encrypted
+//  data. The start of this data has 16 bytes of random data, the last two bytes of that data repeated,
+//  the header of the literal data packet (at least two bytes), a byte for the data format, a byte for
+//  the file name length, the file name (at least one byte), and a four byte timestamp.
+#define MIN_ENC_DATA_HDR_SIZE	27
+
 	//  More than enough space to get through all the header stuff and into the encrypted file data.
 	unsigned char input[512];
 	size_t num_read = fread(input, 1, sizeof(input), infile);
-	if (num_read < 26) {
+	if (num_read < MIN_ENC_DATA_HDR_SIZE) {
 		logit("Input too short - cannot recover data.");
 		return -1;
 	}
 
 	EVP_DecryptUpdate(aes_ctx, output, num_dec, input, num_read);
-	if (*num_dec <= 18) {
+	if (*num_dec <= AES_BLOCK_SIZE + 2) {
 		logit("Decrypted input too short - cannot recover data.");
 		return -2;
 	}
-	if (output[16] != output[14] || output[17] != output[15]) {
+
+	//  The first 16 bytes are random data, then the last two bytes of those 16 should be repeated.
+	if (output[AES_BLOCK_SIZE] != output[AES_BLOCK_SIZE - 2] ||
+		   	output[AES_BLOCK_SIZE + 1] != output[AES_BLOCK_SIZE - 1]) {
 		logit("Checksum error in header - cannot recover data.");
 		return -3;
 	}
-	unsigned char * optr = output + 18;
+	unsigned char * optr = output + AES_BLOCK_SIZE + 2;
 
 	gpg_tag tag;
 	int     tag_size_len = extract_tag_and_size(optr, &tag, len);
@@ -2555,7 +2644,7 @@ process_enc_data_hdr(SHA_CTX * sha_ctx, EVP_CIPHER_CTX * aes_ctx, FILE * infile,
 }
 
 /**
- *  Read encrypted input, write encrypted output.
+ *  Read encrypted input, write decrypted output.
  *
  *  Read chunks from the file, decrypt them, and write the decrypted data to the output file until
  *  we have exhausted the literal data packet.
@@ -2660,7 +2749,7 @@ process_enc_data(SHA_CTX * sha_ctx, EVP_CIPHER_CTX * aes_ctx, FILE * infile, FIL
  *  ** Currently only handles RSA keys.
  *
  *  @param ssh_key SSH RSA key
- *  @param msg Place to write packet
+ *  @param msg Place to write packet. Caller should sshbuf_free msg->data
  */
 static void
 generate_gpg_public_key_packet(const Key * ssh_key, gpg_message * msg)
@@ -2683,7 +2772,7 @@ generate_gpg_public_key_packet(const Key * ssh_key, gpg_message * msg)
  *
  *  @param pub_key Byte array containing cv25519 public key
  *  @param pk_len Num bytes in pub_key
- *  @param msg Place to put generated packet
+ *  @param msg Place to put generated packet. Caller should sshbuf_free msg->data
  */
 static void
 generate_gpg_curve25519_subkey_packet(const unsigned char * pub_key, size_t pk_len, gpg_message * msg)
@@ -2720,7 +2809,7 @@ generate_gpg_curve25519_subkey_packet(const unsigned char * pub_key, size_t pk_l
  *  Generate GPG User ID packet.
  *
  *  @param user_id String identifying user (name and <email>, often)
- *  @param msg Place to put generated packet
+ *  @param msg Place to write packet. Caller should sshbuf_free msg->data
  */
 static void
 generate_gpg_user_id_packet(const char * user_id, gpg_message * msg)
@@ -2731,58 +2820,64 @@ generate_gpg_user_id_packet(const char * user_id, gpg_message * msg)
 }
 
 /**
- *  Generate a Signature packet for given Public Key and UID packets.
+ *  Write the fixed info at the start of the signature packet body.
  *
- *  Given an already generated public key (or public subkey) packet and UID packet, calculate the signature
- *  and format a Signature packet for it.
- *
- *  @param pubkey_pkt Public key or public subkey packet
- *  @param uid_pkt Following UID packet identifying key
- *  @param key RSA SSH key to use to sign
- *  @param sig_class class of signature to generate
- *  @param key_id Shorthand identifier for public key (tail end of keygrip)
- *  @param msg Place to write generated signature packet
+ *  @param body Place to write body data
+ *  @param sig_class Type of signature to generate
+ *  @param pubkey_tag Tag from the public key or subkey packet preceding signature
  */
 static void
-generate_gpg_pk_uid_signature_packet(const gpg_message * pubkey_pkt, const gpg_message * uid_pkt,
-									 const Key * key, int sig_class, const unsigned char * key_id,
-									 gpg_message * msg)
+populate_signature_header(struct sshbuf * body, int sig_class, gpg_tag pubkey_tag)
 {
-	msg->tag = GPG_TAG_SIGNATURE;
-	msg->data = sshbuf_new();
-
-	sshbuf_put_u8(msg->data, GPG_KEY_VERSION);
-	sshbuf_put_u8(msg->data, sig_class);
-	sshbuf_put_u8(msg->data, GPG_PKALGO_RSA_ES);
-	sshbuf_put_u8(msg->data, GPG_HASHALGO_SHA256);
-	sshbuf_put_u16(msg->data, 24);  		//  Len of hashed subpackets
-	sshbuf_put_u8(msg->data, 5);
-	sshbuf_put_u8(msg->data, GPG_SIG_SUBPKT_SIGNATURE_CREATION_TIME);
-	sshbuf_put_u32(msg->data, time(NULL));
-	sshbuf_put_u8(msg->data, 5);
-	sshbuf_put_u8(msg->data, GPG_SIG_SUBPKT_KEY_LIFETIME);
-	sshbuf_put_u32(msg->data, 0);			// Does not expire
-	sshbuf_put_u8(msg->data, 5);
-	sshbuf_put_u8(msg->data, GPG_SIG_SUBPKT_PREF_SYM_ALGO);
-	sshbuf_put_u8(msg->data, GPG_SKALGO_AES256);
-	sshbuf_put_u8(msg->data, GPG_SKALGO_AES192);
-	sshbuf_put_u8(msg->data, GPG_SKALGO_AES128);
-	sshbuf_put_u8(msg->data, 0);
-	sshbuf_put_u8(msg->data, 2);
-	sshbuf_put_u8(msg->data, GPG_SIG_SUBPKT_KEY_FLAGS);
-	if (pubkey_pkt->tag == GPG_TAG_PUBLIC_KEY) {
-		sshbuf_put_u8(msg->data, 0x03);		// Sign + certify
-	} else if (pubkey_pkt->tag == GPG_TAG_PUBLIC_SUBKEY) {
-		sshbuf_put_u8(msg->data, 0x0c);		// encrypt
+	sshbuf_put_u8(body, GPG_KEY_VERSION);
+	sshbuf_put_u8(body, sig_class);
+	sshbuf_put_u8(body, GPG_PKALGO_RSA_ES);
+	sshbuf_put_u8(body, GPG_HASHALGO_SHA256);
+	sshbuf_put_u16(body, 24);  		//  Length of hashed subpackets
+	sshbuf_put_u8(body, 5);			//  Length of signature creation time subpacket
+	sshbuf_put_u8(body, GPG_SIG_SUBPKT_SIGNATURE_CREATION_TIME);
+	sshbuf_put_u32(body, time(NULL));
+	sshbuf_put_u8(body, 5);			//  Length of key lifetime subpacket
+	sshbuf_put_u8(body, GPG_SIG_SUBPKT_KEY_LIFETIME);
+	sshbuf_put_u32(body, 0);			//  Does not expire
+	sshbuf_put_u8(body, 5);			//  Length of preferred symmetric algorithm subpacket
+	sshbuf_put_u8(body, GPG_SIG_SUBPKT_PREF_SYM_ALGO);
+	sshbuf_put_u8(body, GPG_SKALGO_AES256);
+	sshbuf_put_u8(body, GPG_SKALGO_AES192);
+	sshbuf_put_u8(body, GPG_SKALGO_AES128);
+	sshbuf_put_u8(body, 0);			//  No fourth preferred SK algorithm
+	sshbuf_put_u8(body, 2);			//  Length of key flags subpacket
+	sshbuf_put_u8(body, GPG_SIG_SUBPKT_KEY_FLAGS);
+	if (pubkey_tag == GPG_TAG_PUBLIC_KEY) {
+		sshbuf_put_u8(body, 0x03);		// Sign + certify
+	} else if (pubkey_tag == GPG_TAG_PUBLIC_SUBKEY) {
+		sshbuf_put_u8(body, 0x0c);		// encrypt
+	} else {
+		sshbuf_put_u8(body, 0x00);
 	}
-	sshbuf_put_u8(msg->data, 2);
-	sshbuf_put_u8(msg->data, GPG_SIG_SUBPKT_FEATURES);
-	sshbuf_put_u8(msg->data, 0x01);			// enabled MDC - integrity protection for encrypted data packets
+	sshbuf_put_u8(body, 2);			//  Length of features subpacket
+	sshbuf_put_u8(body, GPG_SIG_SUBPKT_FEATURES);
+	sshbuf_put_u8(body, 0x01);			// enabled MDC - integrity protection for encrypted data packets
+}
 
+/**
+ *  Compute the hash that goes in the signature packet
+ *
+ *  The hash is over the pubkey packet, uid packet, and the start of the signature packet.
+ *
+ *  @param pubkey_pkt Already generated public key (or subkey) packet
+ *  @param uid_pkt Already generated UID packet, or NULL if no UID packet (signing subkey, for example)
+ *  @param sig_pkt First portion of the signature packet (everything that needs to be hashed)
+ *  @param hash Place to write the hash (at least SHA256_DIGEST_LENGTH bytes)
+ */
+static void
+compute_signature_hash(const gpg_message * pubkey_pkt, const gpg_message * uid_pkt, const gpg_message * sig_pkt,
+					   unsigned char * hash)
+{
 	SHA256_CTX  ctx;
-	unsigned char buf[6];
-
 	SHA256_Init(&ctx);
+
+	unsigned char buf[6];
 
 	/* The hash is computed over the entire public key packet, the entire UID packet (except the stupid length is
 	 * expanded to four bytes), and the first part of the signature packet. It ends up with a trailer that is the
@@ -2799,45 +2894,65 @@ generate_gpg_pk_uid_signature_packet(const gpg_message * pubkey_pkt, const gpg_m
 	 */
 	if (uid_pkt != NULL) {
 		buf[0] = 0xb4;   //  uid_pkt->tag converted to a tag byte
-		buf[1] = 0x00;
-		buf[2] = 0x00;
-		buf[3] = 0x00;
-		buf[4] = uid_pkt->len;
+		int_to_buf(uid_pkt->len, buf + 1);
 		SHA256_Update(&ctx, buf, 5);
 		SHA256_Update(&ctx, sshbuf_ptr(uid_pkt->data), sshbuf_len(uid_pkt->data));
 	}
 
 	/* Now add the first part of the signature packet, through the hashed data section. */
-	SHA256_Update(&ctx, sshbuf_ptr(msg->data), sshbuf_len(msg->data));
+	SHA256_Update(&ctx, sshbuf_ptr(sig_pkt->data), sshbuf_len(sig_pkt->data));
 
 	/* Append the trailer to the hash. */
-	int hash_len = sshbuf_len(msg->data);
+	int hash_len = sshbuf_len(sig_pkt->data);
 	buf[0] = GPG_KEY_VERSION;
 	buf[1] = 0xff;
-	buf[2] = (unsigned char) ((hash_len >> 24) & 0xff);
-	buf[3] = (unsigned char) ((hash_len >> 16) & 0xff);
-	buf[4] = (unsigned char) ((hash_len >> 8) & 0xff);
-	buf[5] = (unsigned char) (hash_len & 0xff);
+	int_to_buf(hash_len, buf + 2);
 	SHA256_Update(&ctx, buf, 6);
 
-	unsigned char digest[SHA256_DIGEST_LENGTH];
-	SHA256_Final(digest, &ctx);
+	SHA256_Final(hash, &ctx);
+}
+
+/**
+ *  Generate a Signature packet for given Public Key and UID packets.
+ *
+ *  Given an already generated public key (or public subkey) packet and UID packet, calculate the signature
+ *  and format a Signature packet for it.
+ *
+ *  @param pubkey_pkt Public key or public subkey packet
+ *  @param uid_pkt Following UID packet identifying key
+ *  @param key RSA SSH key to use to sign
+ *  @param sig_class class of signature to generate
+ *  @param key_id Shorthand identifier for public key (tail end of keygrip)
+ *  @param msg Place to write generated packet. Caller should sshbuf_free msg->data
+ */
+static void
+generate_gpg_pk_uid_signature_packet(const gpg_message * pubkey_pkt, const gpg_message * uid_pkt,
+									 const Key * key, int sig_class, const unsigned char * key_id,
+									 gpg_message * msg)
+{
+	msg->tag = GPG_TAG_SIGNATURE;
+	msg->data = sshbuf_new();
+
+	populate_signature_header(msg->data, sig_class, pubkey_pkt->tag);
+
+	unsigned char hash[SHA256_DIGEST_LENGTH];
+	compute_signature_hash(pubkey_pkt, uid_pkt, msg, hash);
 
 	/* Add the unhashed subpackets to the signature packet now. Currently, just the issuer subpacket. */
-	sshbuf_put_u16(msg->data, 10); //  Len of unhashed subpackets
-	sshbuf_put_u8(msg->data, 9);
+	sshbuf_put_u16(msg->data, GPG_KEY_ID_LEN + 2);	//  Length of unhashed subpackets
+	sshbuf_put_u8(msg->data, GPG_KEY_ID_LEN + 1);	//  Length of issuer subpacket
 	sshbuf_put_u8(msg->data, GPG_SIG_SUBPKT_ISSUER);
-	sshbuf_put(msg->data, key_id, 8);
+	sshbuf_put(msg->data, key_id, GPG_KEY_ID_LEN);
 
 	/* Tack on the first two bytes of the hash value, for error detection. */
-	sshbuf_put_u8(msg->data, digest[0]);
-	sshbuf_put_u8(msg->data, digest[1]);
+	sshbuf_put_u8(msg->data, hash[0]);
+	sshbuf_put_u8(msg->data, hash[1]);
 
 	/* Now compute the RSA signature of the hash - m^d mod n, where m is the message (the hash), d is the
 	 * private key, and n is the modulus. This MPI goes into the signature packet (with the normal two-octet
 	 * length prefix).
 	 */
-	BIGNUM * sig = compute_rsa_signature(digest, SHA256_DIGEST_LENGTH, key);
+	BIGNUM * sig = compute_rsa_signature(hash, SHA256_DIGEST_LENGTH, key);
 	put_bignum(msg->data, sig);
 	BN_clear_free(sig);
 	msg->len = sshbuf_len(msg->data);
@@ -2914,12 +3029,6 @@ generate_gpg_pkesk_packet(const gpg_public_key * key, unsigned char * sym_key_fr
 		//  Write the ephemeral PK first, prefixed with the two-byte length in bits.
 		//  Then write the encrypted frame without a length prefix.
 		sshbuf_put_u16(msg->data, crypto_box_PUBLICKEYBYTES * 8 + 7);
-		/*
-		   unsigned char z[33];
-		   z[0] = ephem_pk[0];
-		   for (int ct = 1; ct<33; ct++) z[ct] = ephem_pk[33-ct];
-		   sshbuf_put(msg->data, z, 33);
-		   */
 		sshbuf_put(msg->data, ephem_pk, sizeof(ephem_pk));
 		sshbuf_put(msg->data, enc_frame, enc_frame_len);
 		msg->len = sshbuf_len(msg->data);
@@ -2939,7 +3048,7 @@ generate_gpg_pkesk_packet(const gpg_public_key * key, unsigned char * sym_key_fr
  *  @param file_len Num bytes in file that will be placed into literal data packet (limit 2^31 currently)
  *  @param mod_time Last modification time of file
  *  @param data_pkt_hdr Place to write generated packet. Should be at least 12 + fname length bytes
- *  @return int Num bytes in data_pkt_hdr
+ *  @return int Num bytes in data_pkt_hdr, or negative number if error
  */
 static int
 generate_gpg_literal_data_packet(const char * fname, size_t file_len, time_t mod_time,
@@ -2947,25 +3056,26 @@ generate_gpg_literal_data_packet(const char * fname, size_t file_len, time_t mod
 {
 	//  We only put the base file name into the packet - strip the path before doing anything with it.
 	char * tmp_name = strdup(fname);
-	char * base_ptr = basename(tmp_name);
+	char * base_name = basename(tmp_name);
+
+	if (base_name == NULL || strlen(base_name) == 0 || strlen(base_name) > 0xff) {
+		free(tmp_name);
+		return -1;
+	}
 
 	//  Determine size of inner Literal Data Packet
 	unsigned char literal_hdr[6];
-	int data_len = file_len + 4 /*timestamp*/ + strlen(base_ptr) + 1 /*fname len*/ + 1 /*data fmt*/;
+	int data_len = file_len + 4 /*timestamp*/ + strlen(base_name) + 1 /*fname len*/ + 1 /*data fmt*/;
 	int literal_hdr_len = generate_tag_and_size(GPG_TAG_LITERAL_DATA, data_len, literal_hdr);
 
 	unsigned char * dptr = data_pkt_hdr;
 	memcpy(dptr, literal_hdr, literal_hdr_len);
 	dptr += literal_hdr_len;
-	*(dptr++) = 'b';   //  Indicates "binary" data, no CR-LF conversion
-	*(dptr++) = strlen(base_ptr);	//  Precede name by its length, in one byte
-	strcpy(dptr, base_ptr);
-	dptr += strlen(base_ptr);
-	*(dptr++) = mod_time >> 24;
-	*(dptr++) = mod_time >> 16;
-	*(dptr++) = mod_time >>  8;
-	*(dptr++) = mod_time;
-
+	*(dptr++) = 'b';   				//  Indicates "binary" data, no CR-LF conversion
+	*(dptr++) = strlen(base_name);	//  Precede name by its length, in one byte
+	strcpy(dptr, base_name);
+	dptr += strlen(base_name);
+	int_to_buf(mod_time, dptr);
 	free(tmp_name);
 
 	return dptr - data_pkt_hdr;
@@ -3039,6 +3149,7 @@ get_pub_key_packet(FILE * infile)
 			msg->len = len;
 			msg->data = sshbuf_from(key, len);
 		} else {
+			error("Unable to read full public key packet from file.");
 			free(key);
 		}
 	}
@@ -3068,16 +3179,20 @@ get_curve25519_key_packet(FILE * infile)
 		} else {
 			subkey = malloc(len);
 			if (fread(subkey, 1, len, infile) != (size_t) len) {
+				error("Unable to read complete public subkey packet from file.");
 				free(subkey);
 				subkey = NULL;
+				break;
 			}
 		}
 	} while (!feof(infile) && tag != GPG_TAG_PUBLIC_SUBKEY);
 
+#define GPG_SUBKEY_PK_ALGO_OFFSET 5		//  # bytes - 1 from start of packet body to the algorithm type
+
 	if (tag == GPG_TAG_PUBLIC_SUBKEY && subkey != NULL) {
 		//  Make sure it's a curve22519 subkey. Shouldn't be anything else in the file, but just make sure.
-		if (subkey[5] != GPG_PKALGO_ECDH ||
-				memcmp(subkey + 6, curve25519_oid, sizeof(curve25519_oid)) != 0) {
+		if (subkey[GPG_SUBKEY_PK_ALGO_OFFSET] != GPG_PKALGO_ECDH ||
+				memcmp(subkey + GPG_SUBKEY_PK_ALGO_OFFSET + 1, curve25519_oid, sizeof(curve25519_oid)) != 0) {
 			//  Nope - different subkey. Throw the packet away and try again.
 			free(subkey);
 			msg = get_curve25519_key_packet(infile);
@@ -3382,7 +3497,8 @@ write_public_key_file(FILE * pub_file, const Key * ssh_key, const unsigned char 
  *
  *  Generates the contents of each of the files and writes it to the private key subdirectory of the user's
  *  .ssh directory. Files are named with the keygrip of the key. The secret key parameter portions of the files
- *  are encrypted, using the supplied passphrase to generate the key.
+ *  are encrypted, using the supplied passphrase to generate the key. If the secret key files already exist,
+ *  they are overwritten. 
  *
  *  @param ssh_dir Path to the user's .ssh directory (usually under ~<login>)
  *  @param ssh_key RSA key, both public and secret parts
@@ -3403,20 +3519,29 @@ write_secret_key_files(const char * ssh_dir, const Key * ssh_key, const unsigned
 		FILE * rsa_key_file = open_rsa_seckey_file(seckey_dir, ssh_key);
 
 		if (rsa_key_file != NULL) {
+			fchmod(fileno(rsa_key_file), S_IRUSR | S_IWUSR);	//  600 perms.
+
 			struct sshbuf * rsa_seckey = generate_gpg_rsa_seckey(ssh_key, passphrase);
-			if (fwrite(sshbuf_ptr(rsa_seckey), 1, sshbuf_len(rsa_seckey), rsa_key_file) == sshbuf_len(rsa_seckey)) {
-				FILE * c_key_file = open_curve25519_seckey_file(seckey_dir, "w", q, q_len);
-				if (c_key_file != NULL) {
-					struct sshbuf * c_seckey = generate_gpg_curve25519_seckey(q, q_len, d, d_len, passphrase);
-					if (fwrite(sshbuf_ptr(c_seckey), 1, sshbuf_len(c_seckey), c_key_file) == sshbuf_len(c_seckey)) {
-						retval = 0;
+			if (rsa_seckey != NULL) {
+				if (fwrite(sshbuf_ptr(rsa_seckey), 1, sshbuf_len(rsa_seckey), rsa_key_file) ==
+					   			sshbuf_len(rsa_seckey)) {
+					FILE * c_key_file = open_curve25519_seckey_file(seckey_dir, "w", q, q_len);
+					if (c_key_file != NULL) {
+						fchmod(fileno(c_key_file), S_IRUSR | S_IWUSR);	//  600 perms.
+						struct sshbuf * c_seckey = generate_gpg_curve25519_seckey(q, q_len, d, d_len, passphrase);
+						if (c_seckey != NULL) {
+							if (fwrite(sshbuf_ptr(c_seckey), 1, sshbuf_len(c_seckey), c_key_file) ==
+										sshbuf_len(c_seckey)) {
+								retval = 0;
+							}
+							sshbuf_free(c_seckey);
+						}
+						fclose(c_key_file);
 					}
-					sshbuf_free(c_seckey);
-					fclose(c_key_file);
 				}
 				sshbuf_free(rsa_seckey);
-				fclose(rsa_key_file);
 			}
+			fclose(rsa_key_file);
 		}
 		free(seckey_dir);
 	}
@@ -3531,13 +3656,17 @@ write_pubkey_file(const char * login, Key * rsa_key, const unsigned char * key_f
 					outfile = fdopen(fd, "w");
 				}
 				if (outfile != NULL) {
-					char line[3000];
+					char line[3000];		//  Arbitrarily chosen length to handle longest lines in input file
 					while (fgets(line, sizeof(line), infile)) {
 						if (strncmp(line, "iron-", 5) != 0) {
 							fputs(line, outfile);
 						}
 					}
+				} else {
+					error("Unable to open temporary file for output to copy pubkey file.");
 				}
+			} else {
+				error("Unable to open %s for input.", fname);
 			}
 		} else {
 			//  Starting with a fresh file
@@ -3653,16 +3782,15 @@ generate_iron_keys(const char * const ssh_dir, const char * const login)
 							   "it at any time. You just need to enter the passphrase for your RSA key.\n\n",
 							   passphrase);
 
-						if (write_trustdb_file(ssh_dir, key_fp, sizeof(key_fp), uid) == 0 ) {
-							if (write_pubkey_file(login, ssh_key, key_fp, pub_key, subkey_fp, uid) == 0) {
-								retval = 0;
-							}
+						if (write_trustdb_file(ssh_dir, key_fp, sizeof(key_fp), uid) == 0 &&
+							write_pubkey_file(login, ssh_key, key_fp, pub_key, subkey_fp, uid) == 0) {
+							retval = 0;
 						}
 					}
 				}
 				fclose(pub_file);
 			} else {
-				logit("Unable to open %s to write public key.", file_name);
+				error("Unable to open %s to write public key.", file_name);
 			}
 		}
 	}
@@ -4194,9 +4322,7 @@ check_iron_keys(void)
 		snprintf(file_name, PATH_MAX, "%s%s", ssh_dir, GPG_PUBLIC_KEY_FNAME);
 		file_name[PATH_MAX] = '\0';
 
-		struct stat fstats;
-
-		if (stat(file_name, &fstats) >= 0) {
+		if (access(file_name, F_OK) == 0) {
 			char * seckey_dir = check_seckey_dir(ssh_dir);
 			if (seckey_dir != NULL) {
 				//  If the directory is there, assume that the key files are in place.
