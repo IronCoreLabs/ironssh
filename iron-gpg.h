@@ -31,6 +31,10 @@
 #define GPG_KEY_ID_OFFSET		(GPG_KEY_FP_LEN - GPG_KEY_ID_LEN)	//  Offset from start of fingerprint for ID
 
 
+#define IRON_ERR_NOT_ENCRYPTED	-101	//  Attempted to decrypt a file, but didn't find the GPG info we expected
+#define IRON_ERR_NOT_FOR_USER	-102	//  File was encrypted, but not to the user retrieving it
+
+
 extern int	check_iron_keys();
 extern int	write_gpg_encrypted_file(const char * fname, int write_tmpfile, char * enc_fname);
 extern int	write_gpg_decrypted_file(const char * fname, char * dec_fname);

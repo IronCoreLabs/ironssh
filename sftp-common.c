@@ -49,6 +49,10 @@
 #include "sftp.h"
 #include "sftp-common.h"
 
+#ifdef IRONCORE
+#include "iron-common.h"
+#endif
+
 /* Clear contents of attributes structure */
 void
 attrib_clear(Attrib *a)
@@ -246,13 +250,14 @@ ls_file(const char *name, const struct stat *st, int remote, int si_units)
 	ulen = MAX(strlen(user), 8);
 	glen = MAX(strlen(group), 8);
 
-	/* *** ICL Modification *** if file has .iron extension, prefix with lock icon */
+#ifdef IRONCORE
+	/*  If file has .iron extension, prefix with lock icon  */
 	int offset = iron_extension_offset(name);
 	char nbuf[512];
 	char * icon_prefix = (offset > 0) ? ICL_LOCK_ICON : "  ";
 	sprintf(nbuf, "%s%s", icon_prefix, name);
 	name = nbuf;
-	/* *** */
+#endif
 
 	if (si_units) {
 		fmt_scaled((long long)st->st_size, sbuf);
@@ -267,7 +272,7 @@ ls_file(const char *name, const struct stat *st, int remote, int si_units)
 	return xstrdup(buf);
 }
 
-/* *** ICL Modification *** */
+#ifdef IRONCORE
 /**
  *  Check the directory/file name to see if it ends with the ICL sharing suffix.
  *
@@ -297,4 +302,4 @@ iron_extension_offset(const char * name)
 		return (ext - name);
 	}
 }
-/* *** */
+#endif

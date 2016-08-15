@@ -21,6 +21,7 @@
 #include <libgen.h>
 #include <errno.h>
 #include <sys/types.h>
+#include <sys/stat.h>
 #include "sftp-common.h"
 #include "openbsd-compat/openbsd-compat.h"
 #include "openssl/bn.h"
@@ -42,6 +43,7 @@
 #include "openssl/ripemd.h"
 #include "sodium.h"
 #include "sshbuf.h"
+#include "iron-common.h"
 #include "iron-gpg.h"
 
 
@@ -3104,36 +3106,49 @@ get_curve25519_key_packet(FILE * infile)
 static int
 get_gpg_pkesk_packet(FILE * infile, const char * key_id, unsigned char * msg, gpg_tag * next_tag, int * next_len)
 {
-	int retval = -1;
+	int retval = IRON_ERR_NOT_FOR_USER;
 
-	gpg_tag tag = GPG_TAG_DO_NOT_USE;
+	*next_tag = GPG_TAG_DO_NOT_USE;
+	*next_len = -1;
+	gpg_tag tag;
 	size_t len;
 
-	get_tag_and_size(infile, &tag, &len);
+	if (get_tag_and_size(infile, &tag, &len) != 0) {
+		return IRON_ERR_NOT_ENCRYPTED;
+	}
+
 	while (tag == GPG_TAG_PKESK && !feof(infile)) {
 		unsigned char pkt_start[GPG_KEY_ID_LEN + 1];
 		if (fread(pkt_start, 1, sizeof(pkt_start), infile) == sizeof(pkt_start)) {
 			size_t left_to_read = len - (GPG_KEY_ID_LEN + 1);
-			if (memcmp(key_id, pkt_start + 1, GPG_KEY_ID_LEN) == 0) {
+			if (*pkt_start != GPG_PKESK_VERSION) {
+				retval = IRON_ERR_NOT_ENCRYPTED;
+				break;
+			} else if (memcmp(key_id, pkt_start + 1, GPG_KEY_ID_LEN) == 0) {
 				if (fread(msg, 1, left_to_read, infile) == left_to_read) {
 					retval = 0;
 				} else {
-					retval = -1;
+					retval = IRON_ERR_NOT_ENCRYPTED;
 					break;
 				}
 			} else {
 				if (fseek(infile, left_to_read, SEEK_CUR) != 0) {
-					retval = -1;
+					retval = IRON_ERR_NOT_ENCRYPTED;
 					break;
 				}
 			}
 		} else {
+			retval = IRON_ERR_NOT_ENCRYPTED;
 			break;
 		}
-		get_tag_and_size(infile, &tag, &len);
+
+		if (get_tag_and_size(infile, &tag, &len) != 0) {
+			retval = IRON_ERR_NOT_ENCRYPTED;
+			break;
+		}
 	}
 
-	if (!feof(infile)) {
+	if (retval == 0 && !feof(infile)) {
 		*next_tag = tag;
 		*next_len = len;
 	}
@@ -4286,104 +4301,110 @@ write_gpg_decrypted_file(const char * fname, char * dec_fname)
 {
 	if (initialize() != 0) return -1;
 
-	int retval = -1;
 	FILE * infile = fopen(fname, "r");
-	if (infile != NULL) {
-		unsigned char msg[512];
-		gpg_tag next_tag;
-		int     next_len;
+	if (infile == NULL) {
+		logit("Could not open file %s for input.", fname);
+		return -1;
+	}
 
-		const gpg_public_key * pub_keys = get_recipient_keys(user_login);
-		if (pub_keys == NULL) {
-			fclose(infile);
-			return -1;
-		}
+	int retval = -1;
+	*dec_fname = '\0';
+	unsigned char msg[512];
+	gpg_tag next_tag;
+	int     next_len;
 
-		if (get_gpg_pkesk_packet(infile, pub_keys->fp + GPG_KEY_ID_OFFSET, msg, &next_tag, &next_len) == 0) {
-			unsigned char * msg_ptr = msg;
-			if (*(msg_ptr++) == GPG_PKALGO_ECDH) {
-				const unsigned char *ephem_pk;
-				int ekey_offset = extract_ephemeral_key(msg_ptr, &ephem_pk);
-				if (ekey_offset < 0) {
-					fclose(infile);
-					return -2;
-				}
-				msg_ptr += ekey_offset;
+	const gpg_public_key * pub_keys = get_recipient_keys(user_login);
+	if (pub_keys == NULL) {
+		logit("Unable to retrieve public IronCore keys for user %s.", user_login);
+		fclose(infile);
+		return -1;
+	}
 
-				//  If we are actually abole to retrieve what we think is a PKESK packet, chances are good that
-				//  this is really a file containing GPG encrypted data. Before we can get further, we need to
-				//  retrieve the user's secret key.
-				unsigned char sec_key[crypto_box_SECRETKEYBYTES];
-				if (get_secret_encryption_key(pub_keys, sec_key) < 0) {
-					fclose(infile);
-					return -3;
-				}
+	retval = get_gpg_pkesk_packet(infile, pub_keys->fp + GPG_KEY_ID_OFFSET, msg, &next_tag, &next_len);
+	if (retval == 0) {
+		unsigned char * msg_ptr = msg;
+		if (*(msg_ptr++) == GPG_PKALGO_ECDH) {
+			const unsigned char *ephem_pk;
+			int ekey_offset = extract_ephemeral_key(msg_ptr, &ephem_pk);
+			if (ekey_offset < 0) {
+				fclose(infile);
+				return -2;
+			}
+			msg_ptr += ekey_offset;
 
-				unsigned char secret[crypto_box_BEFORENMBYTES];
-				generate_curve25519_shared_secret(sec_key, ephem_pk, secret);
+			//  If we are actually abole to retrieve what we think is a PKESK packet, chances are good that
+			//  this is really a file containing GPG encrypted data. Before we can get further, we need to
+			//  retrieve the user's secret key.
+			unsigned char sec_key[crypto_box_SECRETKEYBYTES];
+			if (get_secret_encryption_key(pub_keys, sec_key) < 0) {
+				fclose(infile);
+				return -3;
+			}
 
-				unsigned char sym_key[AES256_KEY_BYTES];
-				int rv = extract_sym_key(msg_ptr, secret, pub_keys->fp, sym_key);
-				if (rv < 0) {
-					fclose(infile);
-					return -4;
-				}
+			unsigned char secret[crypto_box_BEFORENMBYTES];
+			generate_curve25519_shared_secret(sec_key, ephem_pk, secret);
 
-				//  The next header we read after we processed all the PKESK packets should be the SEIPD
-				//  packet. After the header, there is a one byte version number, then encrypted data.
-				//
-				//  Note that the encrypted data will always be long enough to output at least two blocks (32
-				//  bytes) in the first call to DecryptUpdate - the header + MDC packet is more than 32 bytes,
-				//  even if the file name is 1 character long and the file is empty.
-				unsigned char output[CHUNK_SIZE + 2 * AES_BLOCK_SIZE];
-				unsigned char seipd_ver = fgetc(infile);
-				if (next_tag == GPG_TAG_SEIP_DATA && seipd_ver == GPG_SEIPD_VERSION) {
-					SHA_CTX sha_ctx;
-					SHA1_Init(&sha_ctx);
+			unsigned char sym_key[AES256_KEY_BYTES];
+			int rv = extract_sym_key(msg_ptr, secret, pub_keys->fp, sym_key);
+			if (rv < 0) {
+				fclose(infile);
+				return -4;
+			}
 
-					EVP_CIPHER_CTX aes_ctx;
-					const EVP_CIPHER * aes_cipher = EVP_aes_256_cfb();
-					EVP_CIPHER_CTX_init(&aes_ctx);
-					if (EVP_DecryptInit_ex(&aes_ctx, aes_cipher, NULL /*dflt engine*/, sym_key,
-								NULL /*dflt iv*/)) {
-						int num_dec;
-						ssize_t len;
-						int extra;
-						char local_fname[PATH_MAX + 1];
-						int rv = process_enc_data_hdr(&sha_ctx, &aes_ctx, infile, output, local_fname, &num_dec,
-									   				  &len, &extra);
-						if (rv < 0) {
-							fclose(infile);
-							return -5;
-						}
+			//  The next header we read after we processed all the PKESK packets should be the SEIPD
+			//  packet. After the header, there is a one byte version number, then encrypted data.
+			//
+			//  Note that the encrypted data will always be long enough to output at least two blocks (32
+			//  bytes) in the first call to DecryptUpdate - the header + MDC packet is more than 32 bytes,
+			//  even if the file name is 1 character long and the file is empty.
+			unsigned char output[CHUNK_SIZE + 2 * AES_BLOCK_SIZE];
+			unsigned char seipd_ver = fgetc(infile);
+			if (next_tag == GPG_TAG_SEIP_DATA && seipd_ver == GPG_SEIPD_VERSION) {
+				SHA_CTX sha_ctx;
+				SHA1_Init(&sha_ctx);
 
-						unsigned char * optr = output + rv;
-						FILE * outfile = open_decrypted_output_file(local_fname, fname, dec_fname);
-						if (outfile != NULL) {
-							//  Flush remainder of output buffer that is file data. May still be some left that is
-							//  all or part of the MDC packet. 
-							fwrite(optr, 1, num_dec, outfile);
-							SHA1_Update(&sha_ctx, optr, num_dec);
-							len -= num_dec;
-							optr += num_dec;
+				EVP_CIPHER_CTX aes_ctx;
+				const EVP_CIPHER * aes_cipher = EVP_aes_256_cfb();
+				EVP_CIPHER_CTX_init(&aes_ctx);
+				if (EVP_DecryptInit_ex(&aes_ctx, aes_cipher, NULL /*dflt engine*/, sym_key,
+							NULL /*dflt iv*/)) {
+					int num_dec;
+					ssize_t len;
+					int extra;
+					char local_fname[PATH_MAX + 1];
+					int rv = process_enc_data_hdr(&sha_ctx, &aes_ctx, infile, output, local_fname, &num_dec,
+												  &len, &extra);
+					if (rv < 0) {
+						fclose(infile);
+						return -5;
+					}
 
-							retval = process_enc_data(&sha_ctx, &aes_ctx, infile, outfile, output, optr - output,
-									len, extra);
+					unsigned char * optr = output + rv;
+					FILE * outfile = open_decrypted_output_file(local_fname, fname, dec_fname);
+					if (outfile != NULL) {
+						//  Flush remainder of output buffer that is file data. May still be some left that is
+						//  all or part of the MDC packet. 
+						fwrite(optr, 1, num_dec, outfile);
+						SHA1_Update(&sha_ctx, optr, num_dec);
+						len -= num_dec;
+						optr += num_dec;
 
-							if (retval == 0) {
-								fflush(outfile);
-								rewind(outfile);
-								retval = fileno(outfile);
-							}
+						retval = process_enc_data(&sha_ctx, &aes_ctx, infile, outfile, output, optr - output,
+								len, extra);
+
+						if (retval == 0) {
+							fflush(outfile);
+							rewind(outfile);
+							retval = fileno(outfile);
 						}
 					}
 				}
-			} else {
-				logit("Invalid header on packet in data file - cannot recover data.");
 			}
+		} else {
+			logit("Invalid header on packet in data file - cannot recover data.");
 		}
-		fclose(infile);
 	}
+	fclose(infile);
 
 	return retval;
 }

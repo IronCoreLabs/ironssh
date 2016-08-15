@@ -59,7 +59,10 @@
 #include "sftp-common.h"
 #include "sftp-client.h"
 
-#include "iron-gpg.h"		/* *** ICL Modification *** */
+#ifdef IRONCORE
+#include "iron-common.h"
+#include "iron-gpg.h"
+#endif
 
 extern volatile sig_atomic_t interrupted;
 extern int showprogress;
@@ -85,7 +88,6 @@ struct sftp_conn {
 	u_int exts;
 	u_int64_t limit_kbps;
 	struct bwlimit bwlimit_in, bwlimit_out;
-	const char * icl_identity_servers;		/* *** ICL Modification *** */
 };
 
 static u_char *
@@ -393,7 +395,6 @@ do_init(int fd_in, int fd_out, u_int transfer_buflen, u_int num_requests,
 	ret->num_requests = num_requests;
 	ret->exts = 0;
 	ret->limit_kbps = 0;
-	ret->icl_identity_servers = NULL;	/* *** ICL Modification *** */
 
 	if ((msg = sshbuf_new()) == NULL)
 		fatal("%s: sshbuf_new failed", __func__);
@@ -698,13 +699,15 @@ do_mkdir(struct sftp_conn *conn, const char *path, Attrib *a, int print_flag)
 {
 	u_int status, id;
 
-	/* *** ICL Modifications *** block use of .iron. prefix on directory names on remote server,
-	 * since we use that for the files that store sharing info.  *** */
+#ifdef IRONCORE
+	/*  Block use of .iron. prefix on directory names on remote server, since we use that for the files
+	 *  that store sharing info.
+	 */
 	if (iron_extension_offset(path) >= 0) {
 		error("Directory name suffix \"%s\" reserved for use on the server", ICL_SECURE_FILE_SUFFIX);
 		return(-1);
 	}
-	/* *** */
+#endif
 
 	id = conn->msg_id++;
 	send_string_attrs_request(conn, id, SSH2_FXP_MKDIR, path,
@@ -1417,8 +1420,8 @@ do_download(struct sftp_conn *conn, const char *remote_path,
 		else
 			status = SSH2_FX_OK;
 
-		/*  *** ICL Modification ***
-		 *  After downloading a file, determine whether it is encrypted or not. A ".iron" suffix is not required,
+#ifdef IRONCORE
+		/*  After downloading a file, determine whether it is encrypted or not. A ".iron" suffix is not required,
 		 *  in case someone messed around with the files on the server without using ironsftp. If the file was
 		 *  encrypted, decrypt it. The resulting file will be named using the name of the file that was encrypted.
 		 *  (This name is embedded in the encrypted data).
@@ -1429,8 +1432,21 @@ do_download(struct sftp_conn *conn, const char *remote_path,
 			close(local_fd);
 			unlink(local_path);
 			local_fd = new_local_fd;
+		} else if (iron_extension_offset(local_path) > 0) {
+			if (new_local_fd == IRON_ERR_NOT_ENCRYPTED) {
+				error("WARNING: The file \"%s\" has a \"%s\" extension,\n"
+					  "but it was not encrypted, so it has been left as it was downloaded.",
+					  local_path, ICL_SECURE_FILE_SUFFIX); 
+			} else if (new_local_fd == IRON_ERR_NOT_FOR_USER) {
+				error("WARNING: The file \"%s\" is encrypted, but access is not granted to you,\n"
+					  "so the unencrypted contents cannot be retrieved.", local_path);
+			} else {
+				error("WARNING: An error occured while trying to decrypt the file \"%s\"\n"
+					  "so it has been left as it was downloaded.",
+					  local_path);
+			}
 		}
-		/* *** */
+#endif
 		
 		/* Override umask and utimes if asked */
 #ifdef HAVE_FCHMOD
@@ -1602,12 +1618,13 @@ do_upload(struct sftp_conn *conn, const char *local_path,
 
 	TAILQ_INIT(&acks);
 
-	/* *** ICL Modification ***  Block use of .iron file names on remote server - reserve for our encrypted files. */
+#ifdef IRONCORE
+	/*  Block use of .iron file names on remote server - reserve for our encrypted files. */
 	if (iron_extension_offset(local_path) > 0) {
 		error("File extension \"%s\" reserved for encrypted files.", ICL_SECURE_FILE_SUFFIX);
 		return(-1);
 	}
-	/* *** */
+#endif
 
 	if ((local_fd = open(local_path, O_RDONLY, 0)) == -1) {
 		error("Couldn't open local file \"%s\" for reading: %s",
@@ -1633,13 +1650,14 @@ do_upload(struct sftp_conn *conn, const char *local_path,
 	if (!preserve_flag)
 		a.flags &= ~SSH2_FILEXFER_ATTR_ACMODTIME;
 
-	/* *** ICL Modification ***  Encrypt local file before uploading. */
+#ifdef IRONCORE
+	/*  Encrypt local file before uploading.  */
 	local_fd = write_gpg_encrypted_file(local_path, 1, NULL);
 	if (local_fd < 0) {
 		error("Unable to encrypt local file \"%s\" before uploading.", local_path);
 		return(-1);
 	}
-	/* *** */
+#endif
 
 	if (resume) {
 		/* Get remote file size if it exists */
