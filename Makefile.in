@@ -476,9 +476,10 @@ regress/check-perm$(EXEEXT): $(srcdir)/regress/check-perm.c $(REGRESSLIBS)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ $(srcdir)/regress/check-perm.c \
 	$(LDFLAGS) -lssh -lopenbsd-compat -lssh -lopenbsd-compat $(LIBS)
 
-regress/enc-dec-file$(EXEEXT): $(srcdir)/regress/enc-dec-file.c iron-gpg.o
+regress/enc-dec-file$(EXEEXT): $(srcdir)/regress/enc-dec-file.c iron-gpg.o \
+	iron-sftp-common.o iron-gpg.h iron-common.h
 	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ $(srcdir)/regress/enc-dec-file.c \
-	iron-gpg.o $(LDFLAGS) -lssh -lopenbsd-compat -lssh -lopenbsd-compat \
+	iron-gpg.o iron-sftp-common.o $(LDFLAGS) -lssh -lopenbsd-compat \
 	-lsodium $(LIBS)
 
 UNITTESTS_TEST_HELPER_OBJS=\
@@ -557,7 +558,7 @@ regress/misc/kexfuzz/kexfuzz$(EXEEXT): ${MISC_KEX_FUZZ_OBJS} libssh.a
 
 UNITTESTS_TEST_IRONGPG_OBJS=\
 	regress/unittests/irongpg/iron-gpg-tests.o \
-	sftp-common.o
+	iron-sftp-common.o
 
 regress/unittests/irongpg/test_irongpg$(EXEEXT): \
     ${UNITTESTS_TEST_IRONGPG_OBJS} \
