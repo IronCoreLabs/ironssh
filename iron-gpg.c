@@ -3249,7 +3249,7 @@ static FILE *
 open_encrypted_output_file(const char * fname, char * enc_fname)
 {
 	strcpy(enc_fname, fname);
-	strcat(enc_fname, ICL_SECURE_FILE_SUFFIX);
+	strcat(enc_fname, IRON_SECURE_FILE_SUFFIX);
 
 	FILE * out_file;
 	if (check_write_allowed(enc_fname)) {

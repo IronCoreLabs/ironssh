@@ -624,11 +624,36 @@ process_get(struct sftp_conn *conn, const char *src, const char *dst,
 	if ((r = remote_glob(conn, abs_src, GLOB_MARK, NULL, &g)) != 0) {
 		if (r == GLOB_NOSPACE) {
 			error("Too many matches for \"%s\".", abs_src);
+#ifdef IRONCORE
+			err = -1;
+		} else if (iron_extension_offset(src) < 0) {
+			//  If the requested file didn't have a .iron extension, add one and try again
+			char * iron_name = xmalloc(strlen(abs_src) + IRON_SECURE_FILE_SUFFIX_LEN + 1);
+			strcpy(iron_name, abs_src);
+			strcat(iron_name, IRON_SECURE_FILE_SUFFIX);
+			memset(&g, 0, sizeof(g));
+			if ((r = remote_glob(conn, iron_name, GLOB_MARK, NULL, &g)) != 0) {
+				free(iron_name);
+				error("File \"%s\" not found.", abs_src);
+				err = -1;
+			} else {
+				//  If we found the requested file with a .iron extension, download that file.
+				free(abs_src);
+				abs_src = iron_name;
+			}
+		} else {
+			error("File \"%s\" not found.", abs_src);
+			err = -1;
+		}
+
+		if (err < 0) goto out;
+#else
 		} else {
 			error("File \"%s\" not found.", abs_src);
 		}
 		err = -1;
 		goto out;
+#endif
 	}
 
 	/*
@@ -746,9 +771,9 @@ process_put(struct sftp_conn *conn, const char *src, const char *dst,
 
 #ifdef IRONCORE
 		/*  Append .iron extension to destination file name  */
-		char iron_name[PATH_MAX + ICL_SECURE_FILE_SUFFIX_LEN + 1];
+		char iron_name[PATH_MAX + IRON_SECURE_FILE_SUFFIX_LEN + 1];
 		strcpy(iron_name, filename);
-		strcat(iron_name, ICL_SECURE_FILE_SUFFIX);
+		strcat(iron_name, IRON_SECURE_FILE_SUFFIX);
 #endif
 		
 		if (g.gl_matchc == 1 && tmp_dst) {
@@ -902,13 +927,13 @@ do_ls_dir(struct sftp_conn *conn, const char *path,
 
 				int len = fname_start - d[n]->longname;
 				mprintf("%-*.*s", len, len, d[n]->longname);
-				char * icon_prefix = (offset > 0) ? ICL_LOCK_ICON : "  ";
+				char * icon_prefix = (offset > 0) ? IRON_LOCK_ICON : "  ";
 				mprintf("%s%s\n", icon_prefix, fname);
 			}
 		} else {
 			/*  If file has .iron extension, prefix with lock icon  */
 			int offset = iron_extension_offset(fname);
-			char * icon_prefix = (offset > 0) ? ICL_LOCK_ICON : "  ";
+			char * icon_prefix = (offset > 0) ? IRON_LOCK_ICON : "  ";
 			mprintf("%s%-*s", icon_prefix, (colspace - 2), fname);
 #else
 			} else
@@ -1007,7 +1032,7 @@ do_globbed_ls(struct sftp_conn *conn, const char *path,
 			/*  If file has .iron extension, prefix with lock icon  */
 			int offset = iron_extension_offset(fname);
 			if (offset > 0) {
-				mprintf("%s%-*s", ICL_LOCK_ICON, (colspace - 2), fname);
+				mprintf("%s%-*s", IRON_LOCK_ICON, (colspace - 2), fname);
 			} else {
 				mprintf("  %-*s", (colspace - 2), fname);
 			}

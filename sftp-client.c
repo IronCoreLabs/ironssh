@@ -704,7 +704,7 @@ do_mkdir(struct sftp_conn *conn, const char *path, Attrib *a, int print_flag)
 	 *  that store sharing info.
 	 */
 	if (iron_extension_offset(path) >= 0) {
-		error("Directory name suffix \"%s\" reserved for use on the server", ICL_SECURE_FILE_SUFFIX);
+		error("Directory name suffix \"%s\" reserved for use on the server", IRON_SECURE_FILE_SUFFIX);
 		return(-1);
 	}
 #endif
@@ -1436,7 +1436,7 @@ do_download(struct sftp_conn *conn, const char *remote_path,
 			if (new_local_fd == IRON_ERR_NOT_ENCRYPTED) {
 				error("WARNING: The file \"%s\" has a \"%s\" extension,\n"
 					  "but it was not encrypted, so it has been left as it was downloaded.",
-					  local_path, ICL_SECURE_FILE_SUFFIX); 
+					  local_path, IRON_SECURE_FILE_SUFFIX); 
 			} else if (new_local_fd == IRON_ERR_NOT_FOR_USER) {
 				error("WARNING: The file \"%s\" is encrypted, but access is not granted to you,\n"
 					  "so the unencrypted contents cannot be retrieved.", local_path);
@@ -1621,7 +1621,7 @@ do_upload(struct sftp_conn *conn, const char *local_path,
 #ifdef IRONCORE
 	/*  Block use of .iron file names on remote server - reserve for our encrypted files. */
 	if (iron_extension_offset(local_path) > 0) {
-		error("File extension \"%s\" reserved for encrypted files.", ICL_SECURE_FILE_SUFFIX);
+		error("File extension \"%s\" reserved for encrypted files.", IRON_SECURE_FILE_SUFFIX);
 		return(-1);
 	}
 #endif

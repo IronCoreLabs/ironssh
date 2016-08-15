@@ -167,7 +167,7 @@ refresh_progress_meter(void)
 #define LOCK_PREFIX_EXTRA_CHARS 4	//  For the return character and the first 3 of 4 bytes of the lock icon,
 	   								//	none of which take any space on the screen.
 		if (iron_extension_offset(file) >= 0) {
-			len = snprintf(buf, file_len + LOCK_PREFIX_EXTRA_CHARS, "\r%s%s", ICL_LOCK_ICON, file);
+			len = snprintf(buf, file_len + LOCK_PREFIX_EXTRA_CHARS, "\r%s%s", IRON_LOCK_ICON, file);
 		} else {
 			len = snprintf(buf, file_len + LOCK_PREFIX_EXTRA_CHARS, "\r  %s", file);
 		}

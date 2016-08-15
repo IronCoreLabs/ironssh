@@ -17,19 +17,12 @@
 #ifndef _IRON_COMMON_H
 #define _IRON_COMMON_H
 
-/* Names of the extensions for secure sharing and the ICL identity servers. Value of the first extension is the
- * version number.
- */
-#define ICL_SECURE_SHARING_EXT		"secureSharing@ironcorelabs.com"
-#define ICL_SECURE_SHARING_VER		"1"
-#define ICL_IDENTITY_SERVERS_EXT	"identityServers@ironcorelabs.com"
-
 /* Suffix for files that have been encrypted and shared. */
-#define ICL_SECURE_FILE_SUFFIX		".iron"
-#define ICL_SECURE_FILE_SUFFIX_LEN	5		//  strlen(ICL_SECURE_FILE_SUFFIX)
+#define IRON_SECURE_FILE_SUFFIX		".iron"
+#define IRON_SECURE_FILE_SUFFIX_LEN	5		//  strlen(IRON_SECURE_FILE_SUFFIX)
 
 /* UTF8 character that looks like a padlock, followed by a space */
-#define ICL_LOCK_ICON			"\xf0\x9f\x94\x92 "
+#define IRON_LOCK_ICON				"\xf0\x9f\x94\x92 "
 
 
 int	 iron_extension_offset(const char * name);
