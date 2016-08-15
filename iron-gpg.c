@@ -2608,7 +2608,8 @@ process_enc_data_hdr(SHA_CTX * sha_ctx, EVP_CIPHER_CTX * aes_ctx, FILE * infile,
 	}
 	unsigned char * optr = output + AES_BLOCK_SIZE + 2;
 
-	gpg_tag tag;
+	gpg_tag tag = GPG_TAG_DO_NOT_USE;
+	*len = 0;
 	int     tag_size_len = extract_tag_and_size(optr, &tag, len);
 	optr += tag_size_len;
 	if (tag != GPG_TAG_LITERAL_DATA || *(optr++) != 'b') {	//	We always write literal data in "binary" format)
