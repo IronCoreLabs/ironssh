@@ -49,7 +49,6 @@ typedef void EditLine;
 #endif
 #include <limits.h>
 #include <signal.h>
-#include <stdarg.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -74,6 +73,11 @@ typedef void EditLine;
 
 #define DEFAULT_COPY_BUFLEN	32768	/* Size of buffer for up/download */
 #define DEFAULT_NUM_REQUESTS	64	/* # concurrent outstanding requests */
+
+#ifdef IRONCORE
+#include "iron-common.h"
+#include "iron-gpg.h"
+#endif
 
 /* File to read commands from */
 FILE* infile;
@@ -165,6 +169,10 @@ enum sftp_command {
 	I_SYMLINK,
 	I_VERSION,
 	I_PROGRESS,
+#ifdef IRONCORE
+	I_ADD_RCPT,
+	I_RM_RCPT,
+#endif
 };
 
 struct CMD {
@@ -179,6 +187,9 @@ struct CMD {
 #define LOCAL	2
 
 static const struct CMD cmds[] = {
+#ifdef IRONCORE
+	{ "addrcpt",	I_ADD_RCPT,	LOCAL	},
+#endif
 	{ "bye",	I_QUIT,		NOARGS	},
 	{ "cd",		I_CHDIR,	REMOTE	},
 	{ "chdir",	I_CHDIR,	REMOTE	},
@@ -210,6 +221,9 @@ static const struct CMD cmds[] = {
 	{ "reput",	I_REPUT,	LOCAL	},
 	{ "rm",		I_RM,		REMOTE	},
 	{ "rmdir",	I_RMDIR,	REMOTE	},
+#ifdef IRONCORE
+	{ "rmrcpt",	I_RM_RCPT,	LOCAL	},
+#endif
 	{ "symlink",	I_SYMLINK,	REMOTE	},
 	{ "version",	I_VERSION,	NOARGS	},
 	{ "!",		I_SHELL,	NOARGS	},
@@ -247,6 +261,9 @@ static void
 help(void)
 {
 	printf("Available commands:\n"
+#ifdef IRONCORE
+		"addrcpt login                      Add login to recipient list\n"
+#endif
 	    "bye                                Quit sftp\n"
 	    "cd path                            Change remote directory to 'path'\n"
 	    "chgrp grp path                     Change group of file 'path' to 'grp'\n"
@@ -274,6 +291,9 @@ help(void)
 	    "rename oldpath newpath             Rename remote file\n"
 	    "rm path                            Delete remote file\n"
 	    "rmdir path                         Remove remote directory\n"
+#ifdef IRONCORE
+		"rmrcpt login                       Remove login from recipient list\n"
+#endif
 	    "symlink oldpath newpath            Symlink remote file\n"
 	    "version                            Show SFTP version\n"
 	    "!command                           Execute 'command' in local shell\n"
@@ -586,6 +606,21 @@ pathname_is_dir(const char *pathname)
 	return l > 0 && pathname[l - 1] == '/';
 }
 
+#ifdef IRONCORE
+char *
+iron_append(const char *p1)
+{
+	char *ret;
+	size_t len = strlen(p1) + IRON_SECURE_FILE_SUFFIX_LEN + 1;
+
+	ret = xmalloc(len);
+	strlcpy(ret, p1, len);
+	strlcat(ret, IRON_SECURE_FILE_SUFFIX, len);
+
+	return(ret);
+}
+#endif
+
 static int
 process_get(struct sftp_conn *conn, const char *src, const char *dst,
     const char *pwd, int pflag, int rflag, int resume, int fflag)
@@ -604,11 +639,34 @@ process_get(struct sftp_conn *conn, const char *src, const char *dst,
 	if ((r = remote_glob(conn, abs_src, GLOB_MARK, NULL, &g)) != 0) {
 		if (r == GLOB_NOSPACE) {
 			error("Too many matches for \"%s\".", abs_src);
+#ifdef IRONCORE
+			err = -1;
+		} else if (iron_extension_offset(src) <= 0) {
+			//  If the requested file didn't have a .iron extension, add one and try again
+			char * iron_name = iron_append(abs_src);
+			memset(&g, 0, sizeof(g));
+			if ((r = remote_glob(conn, iron_name, GLOB_MARK, NULL, &g)) != 0) {
+				free(iron_name);
+				error("File \"%s\" not found.", abs_src);
+				err = -1;
+			} else {
+				//  If we found the requested file with a .iron extension, download that file.
+				free(abs_src);
+				abs_src = iron_name;
+			}
+		} else {
+			error("File \"%s\" not found.", abs_src);
+			err = -1;
+		}
+
+		if (err < 0) goto out;
+#else
 		} else {
 			error("File \"%s\" not found.", abs_src);
 		}
 		err = -1;
 		goto out;
+#endif
 	}
 
 	/*
@@ -736,6 +794,16 @@ process_put(struct sftp_conn *conn, const char *src, const char *dst,
 			abs_dst = make_absolute(xstrdup(filename), pwd);
 		}
 		free(tmp);
+#ifdef IRONCORE
+		if (strlen(abs_dst) > PATH_MAX - IRON_SECURE_FILE_SUFFIX_LEN - 1) {
+			error("Destination file name \"%s\" too long.", abs_dst);
+			err = -1;
+			continue;
+		}
+		char * iron_name = iron_append(abs_dst);
+		free(abs_dst);
+		abs_dst = iron_name;
+#endif
 
                 resume |= global_aflag;
 		if (!quiet && resume)
@@ -810,6 +878,10 @@ do_ls_dir(struct sftp_conn *conn, const char *path,
 		m += strlen(tmp);
 		free(tmp);
 
+#ifdef IRONCORE
+		m += IRON_LOCK_ICON_VIS_LEN;  /*  Add space for lock icon or two spaces if not required  */
+#endif
+
 		if (ioctl(fileno(stdin), TIOCGWINSZ, &ws) != -1)
 			width = ws.ws_col;
 
@@ -847,10 +919,31 @@ do_ls_dir(struct sftp_conn *conn, const char *path,
 				    (lflag & LS_SI_UNITS));
 				mprintf("%s\n", lname);
 				free(lname);
+#if IRONCORE
+			} else {
+				/*  If file has .iron extension, prefix with lock icon  */
+				int offset = iron_extension_offset(fname);
+				char * fname_start = strstr(d[n]->longname, fname);
+				if (fname_start == NULL) {
+					fname_start = d[n]->longname + strlen(d[n]->longname);
+				}
+
+				int len = fname_start - d[n]->longname;
+				mprintf("%-*.*s", len, len, d[n]->longname);
+				char * icon_prefix = (offset > 0) ? IRON_LOCK_ICON : IRON_UNLOCKED_ICON;
+				mprintf("%s%s\n", icon_prefix, fname);
+			}
+		} else {
+			/*  If file has .iron extension, prefix with lock icon  */
+			int offset = iron_extension_offset(fname);
+			char * icon_prefix = (offset > 0) ? IRON_LOCK_ICON : IRON_UNLOCKED_ICON;
+			mprintf("%s%-*s", icon_prefix, (colspace - IRON_LOCK_ICON_VIS_LEN), fname);
+#else
 			} else
 				mprintf("%s\n", d[n]->longname);
 		} else {
 			mprintf("%-*s", colspace, fname);
+#endif
 			if (c >= columns) {
 				printf("\n");
 				c = 1;
@@ -917,6 +1010,10 @@ do_globbed_ls(struct sftp_conn *conn, const char *path,
 		for (i = 0; g.gl_pathv[i]; i++)
 			m = MAX(m, strlen(g.gl_pathv[i]));
 
+#ifdef IRONCORE
+		m += IRON_LOCK_ICON_VIS_LEN;  /*  Add space for lock icon or two spaces if not required  */
+#endif
+
 		columns = width / (m + 2);
 		columns = MAX(columns, 1);
 		colspace = width / columns;
@@ -934,7 +1031,14 @@ do_globbed_ls(struct sftp_conn *conn, const char *path,
 			mprintf("%s\n", lname);
 			free(lname);
 		} else {
-			mprintf("%-*s", colspace, fname);
+#ifdef IRONCORE
+			/*  If file has .iron extension, prefix with lock icon  */
+			int offset = iron_extension_offset(fname);
+			char * icon_prefix = (offset > 0) ? IRON_LOCK_ICON : IRON_UNLOCKED_ICON;
+			mprintf("%s%-*s", icon_prefix, (colspace - IRON_LOCK_ICON_VIS_LEN), fname);
+#else
+			mprintf("  %-*s", (colspace - 2), fname);
+#endif
 			if (c >= columns) {
 				printf("\n");
 				c = 1;
@@ -1387,9 +1491,20 @@ parse_args(const char **cpp, int *ignore_errors, int *aflag,
 	case I_HELP:
 	case I_VERSION:
 	case I_PROGRESS:
-		if ((optidx = parse_no_flags(cmd, argv, argc)) == -1)
-			return -1;
 		break;
+#ifdef IRONCORE
+	case I_ADD_RCPT:
+	case I_RM_RCPT:
+		if ((optidx = parse_no_flags(cmd, argv, argc)) <= 0)
+			return -1;
+		/* Login is required */
+		if (optidx >= argc) {
+			error("You must specify a login after a %s command.", cmd);
+			return -1;
+		}
+		*path1 = xstrdup(argv[optidx]);
+		break;
+#endif
 	default:
 		fatal("Command not implemented");
 	}
@@ -1634,6 +1749,22 @@ parse_dispatch_command(struct sftp_conn *conn, const char *cmd, char **pwd,
 		else
 			printf("Progress meter disabled\n");
 		break;
+#ifdef IRONCORE
+	case I_ADD_RCPT:
+		if (add_recipient(path1) == 0) {
+			mprintf("Added login %s to the recipient list\n", path1);
+		} else {
+			err = 1;
+		}
+		break;
+	case I_RM_RCPT:
+		if (remove_recipient(path1) == 0) {
+			mprintf("Removed login %s from the recipient list\n", path1);
+		} else {
+			err = 1;
+		}
+		break;
+#endif
 	default:
 		fatal("%d is not implemented", cmdnum);
 	}
@@ -2436,6 +2567,13 @@ main(int argc, char **argv)
 		else
 			fprintf(stderr, "Attached to %s.\n", sftp_direct);
 	}
+
+#ifdef IRONCORE
+	/*  Generate the GPG key files if they aren't there already.  */
+	if (check_iron_keys() == -1) {
+		fatal("Couldn't find or generate secure file sharing keys.");
+	}
+#endif
 
 	err = interactive_loop(conn, file1, file2);
 

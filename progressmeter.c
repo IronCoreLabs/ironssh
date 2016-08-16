@@ -39,6 +39,9 @@
 #include "progressmeter.h"
 #include "atomicio.h"
 #include "misc.h"
+#ifdef IRONCORE
+#include "iron-common.h"
+#endif
 
 #define DEFAULT_WINSIZE 80
 #define MAX_WINSIZE 512
@@ -160,11 +163,31 @@ refresh_progress_meter(void)
 	buf[0] = '\0';
 	file_len = win_size - 35;
 	if (file_len > 0) {
+#ifdef IRONCORE
+		int fname_limit;
+		char * icon_prefix;
+		if (iron_extension_offset(file) > 0) {
+			icon_prefix = IRON_LOCK_ICON;
+			//  snprintf limit is file len + 1 for CR char + the number of bytes that don't in the icon that
+			//  don't consume visible chars.
+			fname_limit = file_len + 1 + (IRON_LOCK_ICON_LEN - IRON_LOCK_ICON_VIS_LEN);
+		} else {
+			icon_prefix = IRON_UNLOCKED_ICON;
+			fname_limit = file_len + 1 /* for CR */;
+		}
+
+		len = snprintf(buf, fname_limit, "\r%s%s", icon_prefix, file);
+		if (len < 0)
+			len = 0;
+		if (len >= file_len + fname_limit)
+			len = file_len;
+#else
 		len = snprintf(buf, file_len + 1, "\r%s", file);
 		if (len < 0)
 			len = 0;
 		if (len >= file_len + 1)
 			len = file_len;
+#endif
 		for (i = len; i < file_len; i++)
 			buf[i] = ' ';
 		buf[file_len] = '\0';

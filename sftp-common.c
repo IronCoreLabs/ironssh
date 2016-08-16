@@ -49,6 +49,10 @@
 #include "sftp.h"
 #include "sftp-common.h"
 
+#ifdef IRONCORE
+#include "iron-common.h"
+#endif
+
 /* Clear contents of attributes structure */
 void
 attrib_clear(Attrib *a)
@@ -245,6 +249,16 @@ ls_file(const char *name, const struct stat *st, int remote, int si_units)
 		tbuf[0] = '\0';
 	ulen = MAX(strlen(user), 8);
 	glen = MAX(strlen(group), 8);
+
+#ifdef IRONCORE
+	/*  If file has .iron extension, prefix with lock icon  */
+	int offset = iron_extension_offset(name);
+	char nbuf[PATH_MAX + strlen(IRON_LOCK_ICON)];
+	char * icon_prefix = (offset > 0) ? IRON_LOCK_ICON : "  ";
+	sprintf(nbuf, "%s%s", icon_prefix, name);
+	name = nbuf;
+#endif
+
 	if (si_units) {
 		fmt_scaled((long long)st->st_size, sbuf);
 		snprintf(buf, sizeof buf, "%s %3u %-*s %-*s %8s %s %s", mode,
@@ -257,3 +271,25 @@ ls_file(const char *name, const struct stat *st, int remote, int si_units)
 	}
 	return xstrdup(buf);
 }
+
+#ifdef IRONCORE
+/**
+ *  Check the directory/file name to see if it ends with the .iron sharing suffix.
+ *
+ *  @param fname Path name to inspect
+ *  @return int Offset of suffix in fname, or -1 if fname doesn't end with suffix
+ */
+int
+iron_extension_offset(const char * name)
+{
+	int retval = -1;
+	int offset = strlen(name) - IRON_SECURE_FILE_SUFFIX_LEN;
+	if (offset >= 0) {
+		if (strcmp(name + offset, IRON_SECURE_FILE_SUFFIX) == 0) {
+			retval = offset;
+		}
+	}
+
+	return retval;
+}
+#endif
