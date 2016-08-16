@@ -4001,14 +4001,16 @@ read_pubkey_file(const char * login, Key * rsa_key, unsigned char * rsa_fp, unsi
 {
 	int retval = -1;
 
+#define SET_IF_NOT_NULL(fld) if ((fld) != NULL) *(fld) = '\0'
+
 	if (rsa_key != NULL) {
 		RSA_free(rsa_key->rsa);
 		rsa_key->rsa = NULL;
 	}
-	if (rsa_fp != NULL) *rsa_fp = '\0';
-	if (cv25519_key != NULL) *cv25519_key = '\0';
-	if (cv25519_fp != NULL) *cv25519_fp = '\0';
-	if (uid != NULL) *uid = '\0';
+	SET_IF_NOT_NULL(rsa_fp);
+	SET_IF_NOT_NULL(cv25519_key);
+	SET_IF_NOT_NULL(cv25519_fp);
+	SET_IF_NOT_NULL(uid);
 
 	struct passwd * pw = getpwnam(login);
 	if (pw != NULL) {
@@ -4092,22 +4094,14 @@ read_pubkey_file(const char * login, Key * rsa_key, unsigned char * rsa_fp, unsi
 			error("Didn't find RSA key in file.");
 			retval = -1;
 		}
-		if (rsa_fp != NULL && *rsa_fp == '\0') {
-			error("Didn't find RSA key fingerprint in file.");
-			retval = -1;
-		}
-		if (cv25519_key != NULL && *cv25519_key == '\0') {
-			error("Didn't find Curve25519 key in file.");
-			retval = -1;
-		}
-		if (cv25519_fp != NULL && *cv25519_fp == '\0') {
-			error("Didn't find Curve25519 key fingerprint in file.");
-			retval = -1;
-		}
-		if (uid != NULL && *uid == '\0') {
-			error("Didn't find UID fingerprint in file.");
-			retval = -1;
-		}
+
+#define ERR_IF_EMPTY_STR(fld, name) if ((fld) != NULL && *(fld) == '\0') { \
+	error("Didn't find " name " in file."); retval = -1; }
+
+		ERR_IF_EMPTY_STR(rsa_fp, "RSA key fingerprint");
+		ERR_IF_EMPTY_STR(cv25519_key, "Curve25519 key");
+		ERR_IF_EMPTY_STR(cv25519_fp, "Curve25519 key fingerprint");
+		ERR_IF_EMPTY_STR(uid, "User ID");
 	}
 
 	return retval;
