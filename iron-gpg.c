@@ -4001,7 +4001,7 @@ read_pubkey_file(const char * login, Key * rsa_key, unsigned char * rsa_fp, unsi
 {
 	int retval = -1;
 
-	if (rsa_key	!= NULL) {
+	if (rsa_key != NULL) {
 		RSA_free(rsa_key->rsa);
 		rsa_key->rsa = NULL;
 	}
