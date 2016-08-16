@@ -3654,15 +3654,19 @@ write_pubkey_file(const char * login, Key * rsa_key, const unsigned char * key_f
 				snprintf(tname, PATH_MAX, "%s/.pubkey.XXXXXX", pw->pw_dir);
 				tname[PATH_MAX] = '\0';
 				int fd = mkstemp(tname);
-				if (fd > 0) {
-					outfile = fdopen(fd, "w");
-				}
+				if (fd > 0) outfile = fdopen(fd, "w");
 				if (outfile != NULL) {
-					char line[3000];		//  Arbitrarily chosen length to handle longest lines in input file
+					//  Arbitrarily chose a length to handle long lines in input file. However, if a line
+					//  is longer than that length and gets split across multiple fgets() calls, make sure
+					//  to discard or keep the entire line.
+					char line[301];
+					int at_start_of_line = 1;
+					int discard_next = 0;
 					while (fgets(line, sizeof(line), infile)) {
-						if (strncmp(line, "iron-", 5) != 0) {
-							fputs(line, outfile);
-						}
+						int skip_output = (discard_next || (strncmp(line, "iron-", 5) == 0 && at_start_of_line));
+						if (!skip_output) fputs(line, outfile);
+						at_start_of_line = (line[strlen(line) - 1] == '\n');
+						discard_next = skip_output && !at_start_of_line;
 					}
 				} else {
 					error("Unable to open temporary file for output to copy pubkey file.");
