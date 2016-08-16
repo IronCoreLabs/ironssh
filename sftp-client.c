@@ -1652,9 +1652,15 @@ do_upload(struct sftp_conn *conn, const char *local_path,
 
 #ifdef IRONCORE
 	/*  Encrypt local file before uploading.  */
+	close(local_fd);
 	local_fd = write_gpg_encrypted_file(local_path, 1, NULL);
 	if (local_fd < 0) {
 		error("Unable to encrypt local file \"%s\" before uploading.", local_path);
+		return(-1);
+	}
+	if (fstat(local_fd, &sb) == -1) {
+		error("Couldn't fstat encrypted local file: %s", strerror(errno));
+		close(local_fd);
 		return(-1);
 	}
 #endif
@@ -1710,8 +1716,18 @@ do_upload(struct sftp_conn *conn, const char *local_path,
 	/* Read from local and write to remote */
 	offset = progress_counter = (resume ? c->size : 0);
 	if (showprogress)
+#ifdef IRONCORE
+	{
+		//  If we are uploading an encrypted file, we should indicate that by adding the .iron
+		//  extension to the name of the file being uploaded.
+		char iron_name[PATH_MAX + 1];
+		snprintf(iron_name, sizeof(iron_name), "%s%s", local_path, IRON_SECURE_FILE_SUFFIX);
+		start_progress_meter(iron_name, sb.st_size, &progress_counter);
+	}
+#else
 		start_progress_meter(local_path, sb.st_size,
 		    &progress_counter);
+#endif
 
 	for (;;) {
 		int len;
