@@ -606,6 +606,21 @@ pathname_is_dir(const char *pathname)
 	return l > 0 && pathname[l - 1] == '/';
 }
 
+#ifdef IRONCORE
+char *
+iron_append(const char *p1)
+{
+	char *ret;
+	size_t len = strlen(p1) + IRON_SECURE_FILE_SUFFIX_LEN + 1;
+
+	ret = xmalloc(len);
+	strlcpy(ret, p1, len);
+	strlcat(ret, IRON_SECURE_FILE_SUFFIX, len);
+
+	return(ret);
+}
+#endif
+
 static int
 process_get(struct sftp_conn *conn, const char *src, const char *dst,
     const char *pwd, int pflag, int rflag, int resume, int fflag)
@@ -626,11 +641,9 @@ process_get(struct sftp_conn *conn, const char *src, const char *dst,
 			error("Too many matches for \"%s\".", abs_src);
 #ifdef IRONCORE
 			err = -1;
-		} else if (iron_extension_offset(src) < 0) {
+		} else if (iron_extension_offset(src) <= 0) {
 			//  If the requested file didn't have a .iron extension, add one and try again
-			char * iron_name = xmalloc(strlen(abs_src) + IRON_SECURE_FILE_SUFFIX_LEN + 1);
-			strcpy(iron_name, abs_src);
-			strcat(iron_name, IRON_SECURE_FILE_SUFFIX);
+			char * iron_name = iron_append(abs_src);
 			memset(&g, 0, sizeof(g));
 			if ((r = remote_glob(conn, iron_name, GLOB_MARK, NULL, &g)) != 0) {
 				free(iron_name);
@@ -717,21 +730,6 @@ out:
 	return(err);
 }
 
-#ifdef IRONCORE
-char *
-iron_append(const char *p1)
-{
-	char *ret;
-	size_t len = strlen(p1) + IRON_SECURE_FILE_SUFFIX_LEN + 1;
-
-	ret = xmalloc(len);
-	strlcpy(ret, p1, len);
-	strlcat(ret, IRON_SECURE_FILE_SUFFIX, len);
-
-	return(ret);
-}
-#endif
-
 static int
 process_put(struct sftp_conn *conn, const char *src, const char *dst,
     const char *pwd, int pflag, int rflag, int resume, int fflag)
@@ -797,12 +795,14 @@ process_put(struct sftp_conn *conn, const char *src, const char *dst,
 		}
 		free(tmp);
 #ifdef IRONCORE
-		/*  Append .iron extension to destination file name  */
-		char iron_name[PATH_MAX + IRON_SECURE_FILE_SUFFIX_LEN + 1];
-		strlcpy(iron_name, abs_dst, PATH_MAX + 1);
-		strcat(iron_name, IRON_SECURE_FILE_SUFFIX);
+		if (strlen(abs_dst) > PATH_MAX - IRON_SECURE_FILE_SUFFIX_LEN - 1) {
+			error("Destination file name \"%s\" too long.", abs_dst);
+			err = -1;
+			continue;
+		}
+		char * iron_name = iron_append(abs_dst);
 		free(abs_dst);
-		abs_dst = strdup(iron_name);
+		abs_dst = iron_name;
 #endif
 
                 resume |= global_aflag;
@@ -879,7 +879,7 @@ do_ls_dir(struct sftp_conn *conn, const char *path,
 		free(tmp);
 
 #ifdef IRONCORE
-		m += 2;  /*  Add space for lock icon or two spaces if not required  */
+		m += IRON_LOCK_ICON_VIS_LEN;  /*  Add space for lock icon or two spaces if not required  */
 #endif
 
 		if (ioctl(fileno(stdin), TIOCGWINSZ, &ws) != -1)
@@ -930,14 +930,14 @@ do_ls_dir(struct sftp_conn *conn, const char *path,
 
 				int len = fname_start - d[n]->longname;
 				mprintf("%-*.*s", len, len, d[n]->longname);
-				char * icon_prefix = (offset > 0) ? IRON_LOCK_ICON : "  ";
+				char * icon_prefix = (offset > 0) ? IRON_LOCK_ICON : IRON_UNLOCKED_ICON;
 				mprintf("%s%s\n", icon_prefix, fname);
 			}
 		} else {
 			/*  If file has .iron extension, prefix with lock icon  */
 			int offset = iron_extension_offset(fname);
-			char * icon_prefix = (offset > 0) ? IRON_LOCK_ICON : "  ";
-			mprintf("%s%-*s", icon_prefix, (colspace - 2), fname);
+			char * icon_prefix = (offset > 0) ? IRON_LOCK_ICON : IRON_UNLOCKED_ICON;
+			mprintf("%s%-*s", icon_prefix, (colspace - IRON_LOCK_ICON_VIS_LEN), fname);
 #else
 			} else
 				mprintf("%s\n", d[n]->longname);
@@ -1011,7 +1011,7 @@ do_globbed_ls(struct sftp_conn *conn, const char *path,
 			m = MAX(m, strlen(g.gl_pathv[i]));
 
 #ifdef IRONCORE
-		m += 2;  /*  Add space for lock icon or two spaces if not required  */
+		m += IRON_LOCK_ICON_VIS_LEN;  /*  Add space for lock icon or two spaces if not required  */
 #endif
 
 		columns = width / (m + 2);
@@ -1034,11 +1034,8 @@ do_globbed_ls(struct sftp_conn *conn, const char *path,
 #ifdef IRONCORE
 			/*  If file has .iron extension, prefix with lock icon  */
 			int offset = iron_extension_offset(fname);
-			if (offset > 0) {
-				mprintf("%s%-*s", IRON_LOCK_ICON, (colspace - 2), fname);
-			} else {
-				mprintf("  %-*s", (colspace - 2), fname);
-			}
+			char * icon_prefix = (offset > 0) ? IRON_LOCK_ICON : IRON_UNLOCKED_ICON;
+			mprintf("%s%-*s", icon_prefix, (colspace - IRON_LOCK_ICON_VIS_LEN), fname);
 #else
 			mprintf("  %-*s", (colspace - 2), fname);
 #endif
@@ -1498,12 +1495,11 @@ parse_args(const char **cpp, int *ignore_errors, int *aflag,
 #ifdef IRONCORE
 	case I_ADD_RCPT:
 	case I_RM_RCPT:
-		if ((optidx = parse_no_flags(cmd, argv, argc)) == -1)
+		if ((optidx = parse_no_flags(cmd, argv, argc)) <= 0)
 			return -1;
 		/* Login is required */
-		if (argc - optidx < 1) {
-			error("You must specify a login after a %s command.",
-			    cmd);
+		if (optidx >= argc) {
+			error("You must specify a login after a %s command.", cmd);
 			return -1;
 		}
 		*path1 = xstrdup(argv[optidx]);

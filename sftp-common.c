@@ -253,7 +253,7 @@ ls_file(const char *name, const struct stat *st, int remote, int si_units)
 #ifdef IRONCORE
 	/*  If file has .iron extension, prefix with lock icon  */
 	int offset = iron_extension_offset(name);
-	char nbuf[512];
+	char nbuf[PATH_MAX + strlen(IRON_LOCK_ICON)];
 	char * icon_prefix = (offset > 0) ? IRON_LOCK_ICON : "  ";
 	sprintf(nbuf, "%s%s", icon_prefix, name);
 	name = nbuf;
@@ -282,24 +282,14 @@ ls_file(const char *name, const struct stat *st, int remote, int si_units)
 int
 iron_extension_offset(const char * name)
 {
-	const char * ext = NULL;
-	const char * next_ext = strstr(name, IRON_SECURE_FILE_SUFFIX);
-	while (next_ext != NULL) {
-		ext = next_ext;
-		next_ext = strstr(ext + IRON_SECURE_FILE_SUFFIX_LEN, IRON_SECURE_FILE_SUFFIX);
-	}
-
-	if (ext != NULL)  {
-		if (*(ext + IRON_SECURE_FILE_SUFFIX_LEN) != '\0') {
-			//  The last string was not at the end, so it's not actually the file extension.
-			ext = NULL;
+	int retval = -1;
+	int offset = strlen(name) - IRON_SECURE_FILE_SUFFIX_LEN;
+	if (offset >= 0) {
+		if (strcmp(name + offset, IRON_SECURE_FILE_SUFFIX) == 0) {
+			retval = offset;
 		}
 	}
 
-	if (ext == NULL) {
-		return -1;
-	} else {
-		return (ext - name);
-	}
+	return retval;
 }
 #endif

@@ -164,16 +164,22 @@ refresh_progress_meter(void)
 	file_len = win_size - 35;
 	if (file_len > 0) {
 #ifdef IRONCORE
-#define LOCK_PREFIX_EXTRA_CHARS 4	//  For the return character and the first 3 of 4 bytes of the lock icon,
-	   								//	none of which take any space on the screen.
-		if (iron_extension_offset(file) >= 0) {
-			len = snprintf(buf, file_len + LOCK_PREFIX_EXTRA_CHARS, "\r%s%s", IRON_LOCK_ICON, file);
+		int fname_limit;
+		char * icon_prefix;
+		if (iron_extension_offset(file) > 0) {
+			icon_prefix = IRON_LOCK_ICON;
+			//  snprintf limit is file len + 1 for CR char + the number of bytes that don't in the icon that
+			//  don't consume visible chars.
+			fname_limit = file_len + 1 + (IRON_LOCK_ICON_LEN - IRON_LOCK_ICON_VIS_LEN);
 		} else {
-			len = snprintf(buf, file_len + LOCK_PREFIX_EXTRA_CHARS, "\r  %s", file);
+			icon_prefix = IRON_UNLOCKED_ICON;
+			fname_limit = file_len + 1 /* for CR */;
 		}
+
+		len = snprintf(buf, fname_limit, "\r%s%s", icon_prefix, file);
 		if (len < 0)
 			len = 0;
-		if (len >= file_len + LOCK_PREFIX_EXTRA_CHARS)
+		if (len >= file_len + fname_limit)
 			len = file_len;
 #else
 		len = snprintf(buf, file_len + 1, "\r%s", file);

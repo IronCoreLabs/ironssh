@@ -756,7 +756,7 @@ put_num_sexpr(struct sshbuf * buf, const unsigned char * bstr, int bstr_len)
  *  Find the home directory for the specified login and append '/.ssh/ to it.
  *
  *  @param login User for whom to generate path
- *  @param ssh_dir Place to write path (at least PATH_MAX + 1 chars)
+ *  @param ssh_dir Place to write path (at least PATH_MAX chars)
  */
 static void
 populate_ssh_dir(const char * const login, char * ssh_dir)
@@ -764,7 +764,6 @@ populate_ssh_dir(const char * const login, char * ssh_dir)
 	struct passwd * pw = getpwnam(login);
 	if (pw != NULL) {
 		snprintf(ssh_dir, PATH_MAX, "%s/.ssh/", pw->pw_dir);
-		ssh_dir[PATH_MAX] = '\0';
 	} else {
 		*ssh_dir = '\0';
 	}
@@ -787,7 +786,7 @@ get_user_ssh_dir(const char * const login)
 	/* If the requested login is the current user's login, cache the ssh directory value, since we will
 	 * probably need it a few times.
 	 */
-	static char curr_ssh_dir[PATH_MAX + 1] = { 0 };
+	static char curr_ssh_dir[PATH_MAX] = { 0 };
 
 	if (strcmp(login, user_login) == 0) {
 		if (!(*curr_ssh_dir)) {
@@ -796,7 +795,7 @@ get_user_ssh_dir(const char * const login)
 		return curr_ssh_dir;
 	}
 	else {
-		static char ssh_dir[PATH_MAX + 1];
+		static char ssh_dir[PATH_MAX];
 		populate_ssh_dir(login, ssh_dir);
 		return ssh_dir;
 	}
@@ -839,14 +838,14 @@ retrieve_ssh_private_key(const char * ssh_dir, const char * prompt, Key ** key)
 {
 	int retval = -1;
 
-	char ssh_key_file[PATH_MAX + 1];
+	char ssh_key_file[PATH_MAX];
 	snprintf(ssh_key_file, PATH_MAX, "%s%s", ssh_dir, SSH_KEY_FNAME);
 
 	if (access(ssh_key_file, F_OK) == 0) {
-		char iron_key_file[PATH_MAX + 1];
+		char iron_key_file[PATH_MAX];
 		snprintf(iron_key_file, PATH_MAX, "%s%s", ssh_dir, IRON_SSH_KEY_FNAME);
 
-		char cp_cmd[2 * PATH_MAX + 5];   //  Room for "cp " and two file names, space-separated, with NULL term.
+		char cp_cmd[2 * PATH_MAX + 4];   //  Room for "cp " and two file names, space-separated, with NULL term.
 		snprintf(cp_cmd, sizeof(cp_cmd), "cp %s %s", ssh_key_file, iron_key_file);
 		if (system(cp_cmd) == 0) {
 			int retry_ct = 0;
@@ -856,10 +855,10 @@ retrieve_ssh_private_key(const char * ssh_dir, const char * prompt, Key ** key)
 				retry_ct++;
 			}
 		} else {
-			error("Cannot make copy of %s to %s.", ssh_key_file, iron_key_file);
+			error("Cannot make copy of \"%s\" to \"%s\".", ssh_key_file, iron_key_file);
 		}
 	} else {
-		error("Cannot find private key file %s.", ssh_key_file);
+		error("Cannot find private key file \"%s\".", ssh_key_file);
 	}
 
 	return retval;
@@ -880,14 +879,14 @@ retrieve_ssh_public_key(const char * ssh_dir, char ** comment)
 {
 	int retval = -1;
 
-	char ssh_key_file[PATH_MAX + 1];
+	char ssh_key_file[PATH_MAX];
 	snprintf(ssh_key_file, PATH_MAX, "%s%s%s", ssh_dir, SSH_KEY_FNAME, SSH_KEY_PUB_EXT);
 
 	if (access(ssh_key_file, F_OK) == 0) {
-		char iron_key_file[PATH_MAX + 1];
+		char iron_key_file[PATH_MAX];
 		snprintf(iron_key_file, PATH_MAX, "%s%s%s", ssh_dir, IRON_SSH_KEY_FNAME, SSH_KEY_PUB_EXT);
 
-		char cp_cmd[2 * PATH_MAX + 5];   //  Room for "cp " and two file names, space-separated, with NULL term.
+		char cp_cmd[2 * PATH_MAX + 4];   //  Room for "cp " and two file names, space-separated, with NULL term.
 		snprintf(cp_cmd, sizeof(cp_cmd), "cp %s %s", ssh_key_file, iron_key_file);
 		if (system(cp_cmd) == 0) {
 			Key * tmp_key;
@@ -896,10 +895,10 @@ retrieve_ssh_public_key(const char * ssh_dir, char ** comment)
 				sshkey_free(tmp_key);
 			}
 		} else {
-			error("Cannot make copy of %s to %s.", ssh_key_file, iron_key_file);
+			error("Cannot make copy of \"%s\" to \"%s\".", ssh_key_file, iron_key_file);
 		}
 	} else {
-		error("Cannot find public key file %s.", ssh_key_file);
+		error("Cannot find public key file \"%s\".", ssh_key_file);
 	}
 
 	return retval;
@@ -937,16 +936,15 @@ retrieve_ssh_key(const char * const ssh_dir, Key ** key, char ** comment)
  *  Looks in the specified path for a private-keys-v1.d subdirectory.
  *
  *  @param ssh_dir Path to the user's .ssh directory (usually under ~<login>
- *  @return char * Path of private key subdir (at least PATH_MAX + 1 chars). Caller should free
+ *  @return char * Path of private key subdir (at least PATH_MAX chars). Caller should free
  */
 static char *
 check_seckey_dir(const char * ssh_dir)
 {
-	char dir_name[PATH_MAX + 1];
+	char dir_name[PATH_MAX];
 	char * name_ptr = NULL;
 
 	int len = snprintf(dir_name, PATH_MAX, "%s%s/", ssh_dir, GPG_SECKEY_SUBDIR);
-	dir_name[PATH_MAX] = '\0';
 	if (len < (int) sizeof(dir_name)) {
 		if (mkdir(dir_name, 0700) == 0 || errno == EEXIST) {
 			name_ptr = xstrdup(dir_name);
@@ -2009,7 +2007,6 @@ generate_gpg_curve25519_keygrip(const unsigned char * q, int q_len, unsigned cha
 
 	for (size_t ct = 0; ct < sizeof(curve25519_param) / sizeof(struct curve25519_param_entry); ct++) {
 		len = snprintf(buf, sizeof(buf), "(1:%c%u:", ptr->param_name, ptr->len);
-		buf[31] = '\0';
 		sshbuf_put(b, buf, len);
 		sshbuf_put(b, ptr->value, ptr->len);
 		sshbuf_put_u8(b, ')');
@@ -2541,7 +2538,7 @@ extract_sym_key(const unsigned char * msg, const unsigned char * secret, const u
  *  @param aes_ctx AES cipher to decrypt data
  *  @param infile File from which to read encrypted data
  *  @param output Place to store decrypted data (at least 528 bytes)
- *  @param fname Place to store name of the file that was encrypted (at least PATH_MAX + 1 bytes)
+ *  @param fname Place to store name of the file that was encrypted (at least PATH_MAX bytes)
  *  @param num_dec Place to store number of bytes decrypted
  *  @param len Place to store remaining size of encrypted data to process
  *  @param extra Place to store number of bytes of trailing MDC packet that have already been read
@@ -3333,13 +3330,13 @@ open_curve25519_seckey_file(const char * seckey_dir, const char * mode, const un
  *  already exists, generate a file name using mkstemps.
  *
  *  @param fname Name of input file
- *  @param enc_fname Place to write name of output file. Should point to at least PATH_MAX + 1 chars
+ *  @param enc_fname Place to write name of output file. Should point to at least PATH_MAX chars
  *  @return FILE * NULL if unsuccessful, pointer to open file otherwise
  */
 static FILE *
 open_encrypted_output_file(const char * fname, char * enc_fname)
 {
-	if (strlen(fname) > PATH_MAX - 5 - IRON_SECURE_FILE_SUFFIX_LEN) {
+	if (strlen(fname) > PATH_MAX - 6 - IRON_SECURE_FILE_SUFFIX_LEN) {
 		error("Input file name too long to append \"%s\".", IRON_SECURE_FILE_SUFFIX);
 		return NULL;
 	}
@@ -3358,7 +3355,7 @@ open_encrypted_output_file(const char * fname, char * enc_fname)
 	}
 
 	if (out_file == NULL) {
-		error("Could not open output file %s to hold encrypted data from %s.", enc_fname, fname);
+		error("Could not open output file \"%s\" to hold encrypted data from \"%s\".", enc_fname, fname);
 	}
 
 	return out_file;
@@ -3372,13 +3369,13 @@ open_encrypted_output_file(const char * fname, char * enc_fname)
  *  path name for write+ - will overwrite if the file exists.
  *
  *  @param fname Path of input file
- *  @param dec_fname Place to write name of output file. Should be at least PATH_MAX + 1 bytes
+ *  @param dec_fname Place to write name of output file. Should be at least PATH_MAX bytes
  *  @return FILE * Opened output file, NULL if unable to open for output.
  */
 static FILE *
 open_decrypted_output_file(const char * fname, char * dec_fname)
 {
-	if (strlen(fname) > PATH_MAX) {
+	if (strlen(fname) > PATH_MAX - 1) {
 		error("Name of encrypted file, \"%s\", is too long.", fname);
 		return NULL;
 	}
@@ -3391,7 +3388,7 @@ open_decrypted_output_file(const char * fname, char * dec_fname)
 		dec_fname[offset] = '\0';
 		out_file = fopen(dec_fname, "w+");
 		if (out_file == NULL) {
-			error("Could not open output file %s to hold decrypted data from %s.", dec_fname, fname);
+			error("Could not open output file \"%s\" to hold decrypted data from \"%s\".", dec_fname, fname);
 		}
 	} else {
 		error("Expect the file to be decrypted to have a \"%s\" extension,\n   but \"%s\" does not.",
@@ -3614,15 +3611,14 @@ write_pubkey_file(const char * login, Key * rsa_key, const unsigned char * key_f
 {
 	int retval = -1;
 
-	char fname[PATH_MAX + 1];
+	char fname[PATH_MAX];
 	struct passwd * pw = getpwnam(login);
 	if (pw != NULL) {
 		snprintf(fname, PATH_MAX, "%s/.pubkey", pw->pw_dir);
-		fname[PATH_MAX] = '\0';
 
 		FILE * outfile = NULL;
 		int shuffle_files;
-		char tname[PATH_MAX + 1];
+		char tname[PATH_MAX];
 		FILE * infile;
 
 		if (access(fname, F_OK) == 0) {
@@ -3631,7 +3627,6 @@ write_pubkey_file(const char * login, Key * rsa_key, const unsigned char * key_f
 			infile = fopen(fname, "r");
 			if (infile != NULL) {
 				snprintf(tname, PATH_MAX, "%s/.pubkey.XXXXXX", pw->pw_dir);
-				tname[PATH_MAX] = '\0';
 				int fd = mkstemp(tname);
 				if (fd > 0) outfile = fdopen(fd, "w");
 				if (outfile != NULL) {
@@ -3651,7 +3646,7 @@ write_pubkey_file(const char * login, Key * rsa_key, const unsigned char * key_f
 					error("Unable to open temporary file for output to copy pubkey file.");
 				}
 			} else {
-				error("Unable to open %s for input.", fname);
+				error("Unable to open \"%s\" for input.", fname);
 			}
 		} else {
 			//  Starting with a fresh file
@@ -3734,9 +3729,8 @@ generate_iron_keys(const char * const ssh_dir, const char * const login)
 		if (retrieve_ssh_key(ssh_dir, &ssh_key, &comment) == 0) {
 			//if (copy_ssh_key_file(ssh_dir)
 
-			char file_name[PATH_MAX + 1];
+			char file_name[PATH_MAX];
 			snprintf(file_name, PATH_MAX, "%s%s", ssh_dir, GPG_PUBLIC_KEY_FNAME);
-			file_name[PATH_MAX] = '\0';
 			FILE * pub_file = fopen(file_name, "w");
 			if (pub_file != NULL) {
 				unsigned char key_fp[GPG_KEY_FP_LEN];
@@ -3775,7 +3769,7 @@ generate_iron_keys(const char * const ssh_dir, const char * const login)
 				}
 				fclose(pub_file);
 			} else {
-				error("Unable to open %s to write public key.", file_name);
+				error("Unable to open \"%s\" to write public key.", file_name);
 			}
 		}
 	}
@@ -3893,12 +3887,11 @@ get_public_keys(const char * login, Key * rsa_key, unsigned char * rsa_fp, unsig
 	int retval = read_pubkey_file(login, rsa_key, rsa_fp, key, key_len, fp, NULL);
 	if (retval != 0) {
 		//  Couldn't get data from the user's .pubkey file - fetch from pubring.gpg
-		char key_file_name[PATH_MAX + 1];
+		char key_file_name[PATH_MAX];
 		FILE * key_file;
 
 		const char * ssh_dir = get_user_ssh_dir(login);
 		snprintf(key_file_name, PATH_MAX, "%s%s", ssh_dir, GPG_PUBLIC_KEY_FNAME);
-		key_file_name[PATH_MAX] = '\0';
 		key_file = fopen(key_file_name, "r");
 		if (key_file != NULL) {
 			retval = 0;
@@ -4009,9 +4002,8 @@ read_pubkey_file(const char * login, Key * rsa_key, unsigned char * rsa_fp, unsi
 	int retval = 0;
 	struct passwd * pw = getpwnam(login);
 	if (pw != NULL) {
-		char fname[PATH_MAX + 1];
+		char fname[PATH_MAX];
 		snprintf(fname, PATH_MAX, "%s/.pubkey", pw->pw_dir);
-		fname[PATH_MAX] = '\0';
 
 		FILE * infile = fopen(fname, "r");
 		if (infile != NULL) {
@@ -4055,8 +4047,7 @@ read_pubkey_file(const char * login, Key * rsa_key, unsigned char * rsa_fp, unsi
 					}
 					if (uid != NULL) {
 						token = strsep(&lptr, " ");
-						strncpy(uid, token, GPG_MAX_UID_LEN);
-						uid[GPG_MAX_UID_LEN] = '\0';
+						strlcpy(uid, token, GPG_MAX_UID_LEN);
 					}
 				} else if (strncmp(line, "iron-cv25519:", 13) == 0) {
 					token = strsep(&lptr, " ");		// Skip initial "iron-cv25519: "
@@ -4249,9 +4240,8 @@ write_trustdb_file(const char * ssh_dir, const unsigned char * key, size_t key_l
 {
 	int retval = -1;
 
-	char file_name[PATH_MAX + 1];
+	char file_name[PATH_MAX];
 	snprintf(file_name, PATH_MAX, "%s%s", ssh_dir, GPG_TRUSTDB_FNAME);
-	file_name[PATH_MAX] = '\0';
 	FILE * tdb_fp = fopen(file_name, "w");
 	if (tdb_fp != NULL) {
 		fchmod(fileno(tdb_fp), S_IRUSR | S_IWUSR);
@@ -4303,9 +4293,8 @@ check_iron_keys(void)
 	int retval = -1;
 	const char * ssh_dir = get_user_ssh_dir(user_login);
 	if (ssh_dir != NULL && *ssh_dir) {
-		char file_name[PATH_MAX + 1];
+		char file_name[PATH_MAX];
 		snprintf(file_name, PATH_MAX, "%s%s", ssh_dir, GPG_PUBLIC_KEY_FNAME);
-		file_name[PATH_MAX] = '\0';
 
 		if (access(file_name, F_OK) == 0) {
 			char * seckey_dir = check_seckey_dir(ssh_dir);
@@ -4318,14 +4307,14 @@ check_iron_keys(void)
 
 		if (retval < 0) {
 			if (errno == EACCES) {
-				error("No access to the %s directory.", ssh_dir);
+				error("No access to the \"%s\" directory.", ssh_dir);
 			}
 			else if (errno == ENOENT) {
 				//  Try to generate key pair and create files.
 				retval = generate_iron_keys(ssh_dir, user_login);
 			}
 			else {
-				error("Error checking %s - %s", file_name, strerror(errno));
+				error("Error checking \"%s\" - %s", file_name, strerror(errno));
 			}
 		}
 	} else {
@@ -4343,7 +4332,7 @@ check_iron_keys(void)
  *  containing the encrypted data.
  *
  *  @param fname Path of the file to encrypt
- *  @param enc_fname Output the path of the encrypted file - should point to at least PATH_MAX + 1 chars
+ *  @param enc_fname Output the path of the encrypted file - should point to at least PATH_MAX chars
  *  @return int - file number of the output file, or negative number if error
  */
 int
@@ -4415,7 +4404,7 @@ write_gpg_decrypted_file(const char * fname, char * dec_fname)
 
 	FILE * infile = fopen(fname, "r");
 	if (infile == NULL) {
-		error("Could not open file %s for input.", fname);
+		error("Could not open file \"%s\" for input.", fname);
 		return -1;
 	}
 
@@ -4483,7 +4472,7 @@ write_gpg_decrypted_file(const char * fname, char * dec_fname)
 					int num_dec;
 					ssize_t len;
 					int extra;
-					char local_fname[PATH_MAX + 1];
+					char local_fname[PATH_MAX];
 					int rv = process_enc_data_hdr(&sha_ctx, &aes_ctx, infile, output, local_fname, &num_dec,
 												  &len, &extra);
 					if (rv < 0) {
@@ -4510,7 +4499,7 @@ write_gpg_decrypted_file(const char * fname, char * dec_fname)
 							retval = fileno(outfile);
 						}
 					} else {
-						error("Unable to open an output file to hold decrypted contents of %s -\n   %s.",
+						error("Unable to open an output file to hold decrypted contents of \"%s\" -\n   %s.",
 							  fname, strerror(errno));
 					}
 				}
@@ -4527,11 +4516,11 @@ write_gpg_decrypted_file(const char * fname, char * dec_fname)
 
 //================================================================================
 //  Functions to manipulate list of registered recipients - the users with which
-//  an uploaded file will be shared.
+//  an uploaded file will be shared.  We have imposed a somewhat arbitrary limit
+//  of 10 recipients (in addition to the current user) for file sharing.
 //================================================================================
-#define RECIPIENT_LIST_BLOCK_LEN	5
-static gpg_public_key * recipient_list = NULL;
-static int max_recipients = 0;
+#define MAX_RECIPIENTS	11
+static gpg_public_key recipient_list[11];
 static int num_recipients = 0;
 
 /**
@@ -4546,11 +4535,7 @@ static int num_recipients = 0;
 static int
 get_recipients(const gpg_public_key ** recip_list)
 {
-	if (recipient_list == NULL) {
-		recipient_list = calloc(RECIPIENT_LIST_BLOCK_LEN, sizeof(gpg_public_key));
-		max_recipients = RECIPIENT_LIST_BLOCK_LEN;
-		num_recipients = 0;
-
+	if (num_recipients == 0) {
 		//  The current user is always included in the recipient list, so get that entry added.
 		if (add_recipient(user_login) != 0) {
 			*recip_list = NULL;
@@ -4593,6 +4578,8 @@ get_recipient_keys(const char * login)
  *  has a ~<login>/.pubkey file, or that we can access the user's ~<login>/.ssh/pubring.gpg file. (The
  *  latter probably only happens if the login is the user running the process.)
  *
+ *  We have a lmit on the number that can be added - attempting to add one more is an error.
+ *
  *  @param login User to add
  *  @return int 0 if successful, negative number if error
  */
@@ -4609,26 +4596,25 @@ add_recipient(const char * login)
 	}
 
 	if (retval == 0) {
-		if (num_recipients == max_recipients) {
-			//  List full - need to expand. Just add block of RECIPIENT_LIST_BLOCK_LEN entries each time.
-			max_recipients += RECIPIENT_LIST_BLOCK_LEN;
-			recipient_list = xreallocarray(recipient_list, max_recipients, sizeof(gpg_public_key));
-		}
-
-		gpg_public_key * new_ent = recipient_list + num_recipients;
-		strncpy(new_ent->login, login, MAX_LOGIN_LEN);
-		new_ent->login[MAX_LOGIN_LEN] = 0;
-		size_t key_len;
-		bzero(&(new_ent->rsa_key), sizeof(new_ent->rsa_key));
-		new_ent->rsa_key.type = KEY_RSA;
-		new_ent->rsa_key.rsa  = RSA_new();
-		new_ent->rsa_key.ecdsa_nid  = -1;
-		if (get_public_keys(login, &(new_ent->rsa_key), new_ent->signer_fp, new_ent->key, &key_len,
-							new_ent->fp) == 0) {
-			num_recipients++;
+		if (num_recipients < MAX_RECIPIENTS) {
+			gpg_public_key * new_ent = recipient_list + num_recipients;
+			strncpy(new_ent->login, login, MAX_LOGIN_LEN);
+			new_ent->login[MAX_LOGIN_LEN] = 0;
+			size_t key_len;
+			bzero(&(new_ent->rsa_key), sizeof(new_ent->rsa_key));
+			new_ent->rsa_key.type = KEY_RSA;
+			new_ent->rsa_key.rsa  = RSA_new();
+			new_ent->rsa_key.ecdsa_nid  = -1;
+			if (get_public_keys(login, &(new_ent->rsa_key), new_ent->signer_fp, new_ent->key, &key_len,
+								new_ent->fp) == 0) {
+				num_recipients++;
+			} else {
+				error("Unable to retrieve public key information for user %s", login);
+				retval = -1;
+			}
 		} else {
-			error("Unable to retrieve public key information for user %s", login);
-			retval = -1;
+			error("Recipient list is full - cannot add more.");
+				retval = -1;
 		}
 	}
 
@@ -4683,10 +4669,7 @@ remove_recipient(const char * login)
 void
 reset_recipients()
 {
-	free(recipient_list);
-	recipient_list = NULL;
 	num_recipients = 0;
-	max_recipients = 0;
 }
 
 
@@ -5049,11 +5032,11 @@ mainline(int argc, char **argv)
 	memcpy(recipient_list[1].signer_fp, pkafp, sizeof(pkafp));
 	num_recipients = 2;
 
-	char enc_fname[PATH_MAX + 1];
+	char enc_fname[PATH_MAX];
 	int outfd = write_gpg_encrypted_file("foob", enc_fname);
 	assert(outfd >= 0);
 	close(outfd);
-	char dec_fname[PATH_MAX + 1];
+	char dec_fname[PATH_MAX];
 	write_gpg_decrypted_file("foob.iron", dec_fname);
 
 	// Try to construct a GPG public key signature and see why our signature is wrong

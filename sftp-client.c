@@ -700,11 +700,11 @@ do_mkdir(struct sftp_conn *conn, const char *path, Attrib *a, int print_flag)
 	u_int status, id;
 
 #ifdef IRONCORE
-	/*  Block use of .iron. prefix on directory names on remote server, since we use that for the files
-	 *  that store sharing info.
+	/*  Block use of .iron extension on directory names on remote server, since we use that for the files
+	 *  that store sharing info. Not that we also disallow ".iron" by itself.
 	 */
 	if (iron_extension_offset(path) >= 0) {
-		error("Directory name suffix \"%s\" reserved for use on the server", IRON_SECURE_FILE_SUFFIX);
+		error("Suffix of directory name \"%s\" reserved for use on the server", path);
 		return(-1);
 	}
 #endif
@@ -1156,16 +1156,16 @@ send_read_request(struct sftp_conn *conn, u_int id, u_int64_t offset,
 }
 
 #ifdef IRONCORE
-static char
-get_yes_no(void)
+static int
+get_user_confirmation(void)
 {
 	char line[30];
 	fgets(line, sizeof(line), stdin);
-	char yesno = line[0];
+	char yesno = line[strspn(line, " \t")];		//  Skips leading white space
 	while (line[strlen(line) - 1] != '\n') {
 		fgets(line, sizeof(line), stdin);
 	}
-	return yesno;
+	return (yesno == 'y' || yesno == 'Y');
 }
 #endif
 
@@ -1223,15 +1223,15 @@ do_download(struct sftp_conn *conn, const char *remote_path,
 	attrib_clear(&junk); /* Send empty attributes */
 
 #ifdef IRONCORE
-	if (strlen(local_path) > PATH_MAX - IRON_SECURE_FILE_SUFFIX_LEN) {
-		error("Local path name %s too long.", local_path);
+	if (strlen(local_path) > PATH_MAX - IRON_SECURE_FILE_SUFFIX_LEN - 1) {
+		error("Local path name \"%s\" too long.", local_path);
 		return(-1);
 	}
 	const char * output_path;
-	char iron_name[PATH_MAX + IRON_SECURE_FILE_SUFFIX_LEN + 1];
+	char iron_name[PATH_MAX];
 	strcpy(iron_name, local_path);
 	int iron_offset = iron_extension_offset(local_path);
-	if (iron_offset < 0) {
+	if (iron_offset <= 0) {
 		output_path = local_path;
 		/*  Append .iron extension to download file name  */
 		strcpy(iron_name, local_path);
@@ -1243,16 +1243,14 @@ do_download(struct sftp_conn *conn, const char *remote_path,
 		output_path = iron_name;
 	}
 	if (access(output_path, F_OK) == 0) {
-		printf("Output file %s already exists. Overwrite (y/n)? ", output_path);
-		char yesno = get_yes_no();
-		if (yesno != 'y' && yesno != 'Y') {
+		printf("Output file \"%s\" already exists. Overwrite (y/n)? ", output_path);
+		if (!get_user_confirmation()) {
 			return(-1);
 		}
 	}
 	if (access(local_path, F_OK) == 0) {
-		printf("Download destination file %s already exists. Overwrite (y/n)? ", local_path);
-		char yesno = get_yes_no();
-		if (yesno != 'y' && yesno != 'Y') {
+		printf("Download destination file \"%s\" already exists. Overwrite (y/n)? ", local_path);
+		if (!get_user_confirmation()) {
 			return(-1);
 		}
 	}
@@ -1474,7 +1472,7 @@ do_download(struct sftp_conn *conn, const char *remote_path,
 		 *  it should have a ".iron" suffix. If the file can be decrypted, the output file will have the ".iron"
 		 *  stripped. If the file wasn't encrypted, we should try to rename without the .iron suffix.
 		 */
-		char dec_fname[PATH_MAX + 1];
+		char dec_fname[PATH_MAX];
 		int new_local_fd = write_gpg_decrypted_file(local_path, dec_fname);
 		if (new_local_fd > 0) {
 			close(local_fd);
@@ -1668,19 +1666,27 @@ do_upload(struct sftp_conn *conn, const char *local_path,
 		return(-1);
 	}
 
+	if (strlen(local_path) > PATH_MAX - IRON_SECURE_FILE_SUFFIX_LEN - 1) {
+		error("Local file name \"%s\" too long.", local_path);
+		return(-1);
+	}
+	if (strlen(remote_path) > PATH_MAX - IRON_SECURE_FILE_SUFFIX_LEN - 1) {
+		error("Remote file name \"%s\" too long.", remote_path);
+		return(-1);
+	}
+
 	/*  If the destination file name doesn't end in ".iron", append it.  */
-	char remote_iron_name[PATH_MAX + IRON_SECURE_FILE_SUFFIX_LEN + 1];
-	if (iron_extension_offset(remote_path) < 0) {
-		strlcpy(remote_iron_name, remote_path, PATH_MAX);
+	char remote_iron_name[PATH_MAX];
+	if (iron_extension_offset(remote_path) <= 0) {
+		strcpy(remote_iron_name, remote_path);
 		strcat(remote_iron_name, IRON_SECURE_FILE_SUFFIX);
 		remote_path = remote_iron_name;
 	}
 
 	c = do_stat(conn, remote_path, 1);
 	if (c != NULL) {
-		printf("Encrypted file %s exists on remote server. Overwrite (y/n)? ", remote_path);
-		char yesno = get_yes_no();
-		if (yesno != 'y' && yesno != 'Y') {
+		printf("Encrypted file \"%s\" exists on remote server. Overwrite (y/n)? ", remote_path);
+		if (!get_user_confirmation()) {
 			return(-1);
 		}
 	}
@@ -1713,7 +1719,7 @@ do_upload(struct sftp_conn *conn, const char *local_path,
 #ifdef IRONCORE
 	/*  Encrypt local file before uploading.  */
 	close(local_fd);
-	char enc_fname[PATH_MAX + 1];
+	char enc_fname[PATH_MAX];
 	local_fd = write_gpg_encrypted_file(local_path, enc_fname);
 	if (local_fd < 0) {
 		error("Unable to encrypt local file \"%s\" before uploading.", local_path);
@@ -1782,7 +1788,7 @@ do_upload(struct sftp_conn *conn, const char *local_path,
 	{
 		//  If we are uploading an encrypted file, we should indicate that by adding the .iron
 		//  extension to the name of the file being uploaded.
-		char local_iron_name[PATH_MAX + 1];
+		char local_iron_name[PATH_MAX];
 		snprintf(local_iron_name, sizeof(local_iron_name), "%s%s", local_path, IRON_SECURE_FILE_SUFFIX);
 		start_progress_meter(local_iron_name, sb.st_size, &progress_counter);
 	}

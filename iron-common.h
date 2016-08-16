@@ -21,8 +21,13 @@
 #define IRON_SECURE_FILE_SUFFIX		".iron"
 #define IRON_SECURE_FILE_SUFFIX_LEN	5		//  strlen(IRON_SECURE_FILE_SUFFIX)
 
-/* UTF8 character that looks like a padlock, followed by a space */
+/* UTF8 character that looks like a padlock, followed by a space, and an
+ * alternative string to use if the file is not locked, to consume the same
+ * amount of visible space. */
 #define IRON_LOCK_ICON				"\xf0\x9f\x94\x92 "
+#define IRON_UNLOCKED_ICON			"  "
+#define IRON_LOCK_ICON_LEN			5	//  # bytes to store
+#define IRON_LOCK_ICON_VIS_LEN		2	//  # chars consumed on screen
 
 
 int	 iron_extension_offset(const char * name);
