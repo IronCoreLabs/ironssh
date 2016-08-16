@@ -69,9 +69,6 @@
 #define GPG_MDC_PKT_LEN			22		//  Two byte tag + len, 20 byte SHA1 hash
 
 
-#define DECRYPT_SUFFIX			".decrypt"	//  Appended to output file for decryption if input doesn't have .iron
-											//  extension.
-
 #define SSH_KEY_FNAME			"id_rsa"
 #define IRON_SSH_KEY_FNAME		"id_rsa.iron"
 #define SSH_KEY_PUB_EXT			".pub"
@@ -455,7 +452,6 @@ static int		retrieve_ssh_private_key(const char * ssh_dir, const char * prompt, 
 static int		retrieve_ssh_public_key(const char * ssh_dir, char ** comment);
 static int		retrieve_ssh_key(const char * const ssh_dir, Key ** key, char ** comment);
 static char *	check_seckey_dir(const char * ssh_dir);
-static int		check_write_allowed(const char * out_name);
 static int		hashcrypt(SHA_CTX * sha_ctx, EVP_CIPHER_CTX * aes_ctx, const unsigned char * input, int size,
 						  unsigned char * output);
 static void		reverse_byte_array(const unsigned char * src, unsigned char * dst, unsigned int len);
@@ -961,31 +957,6 @@ check_seckey_dir(const char * ssh_dir)
 }
 
 /**
- *  Determine if file can be written.
- *
- *  If file doesnt exist, assume OK. If it does exist, prompt user to see if it is OK to overwrite.
- *
- *  @param out_name Path to file to check
- *  @return int 1 if OK, 0 if not
- */
-static int
-check_write_allowed(const char * out_name)
-{
-	int retval = 1;
-	//  Check to see if the file already exists. If so, ask the user whether to overwrite
-	if (access(out_name, F_OK) == 0) {
-		printf("Output file %s already exists - overwrite? (y/N)? ", out_name);
-		char line[80];
-		line[0] = '\0';
-		fgets(line, sizeof(line), stdin);
-		if (line[0] != 'y' && line[0] != 'Y') {
-			retval = 0;
-		}
-	}
-	return retval;
-}
-
-/**
  *  Simultaneously update a SHA1 hash and an AES encryption with data buffer.
  *
  *  Given a block of data, add to running SHA1 hash, and AES encrypt the data and write to output buffer.
@@ -1240,12 +1211,12 @@ generate_gpg_passphrase_from_rsa(const Key * rsa_key, char * passphrase)
 			if (ssh_dir != NULL) {
 				int rv = retrieve_ssh_private_key(ssh_dir, "To decrypt file, enter passphrase for SSH key: ", &key);
 				if (rv != 0) {
-					logit("Unable to retrieve SSH key: %s", ssh_err(rv));
+					error("Unable to retrieve SSH key: %s", ssh_err(rv));
 					retval = -2;
 					key = NULL;
 				}
 			} else {
-				logit("Unable to retrieve SSH key - no .ssh dir for login %s", user_login);
+				error("Unable to retrieve SSH key - no .ssh dir for login %s", user_login);
 				retval = -3;
 			}
 		} else {
@@ -1255,7 +1226,7 @@ generate_gpg_passphrase_from_rsa(const Key * rsa_key, char * passphrase)
 		if (key != NULL) {
 			int rv = sshkey_sign(key, &signature, &sig_len, params, params_len, "ssh-rsa", 0);
 			if (rv != 0) {
-				logit("Error generating signature for passphrase - %s.", ssh_err(rv));
+				error("Error generating signature for passphrase - %s.", ssh_err(rv));
 				retval = -4;
 			}
 		}
@@ -1276,7 +1247,7 @@ generate_gpg_passphrase_from_rsa(const Key * rsa_key, char * passphrase)
 			len = (len << 8) + *sptr;
 		}
 		if ((sig_len - len) != (size_t) (sptr - signature)) {
-			logit("Unrecognized format for RSA signature. Unable to generate passphrase.");
+			error("Unrecognized format for RSA signature. Unable to generate passphrase.");
 			retval = -5;
 		} else {
 			uuencode(sptr, PRE_ENC_PPHRASE_BYTES, passphrase, PPHRASE_LEN);
@@ -2437,7 +2408,7 @@ extract_gpg_curve25519_seckey(const unsigned char * buf, int buf_len, const Key 
 		}
 		ptr += len;
 		if (*(ptr++) != ')' || (strncmp(ptr, GPG_SEC_PARM_PREFIX, strlen(GPG_SEC_PARM_PREFIX)) != 0)) {
-			logit("Invalid format - unable to retrieve secret key.");
+			error("Invalid format - unable to retrieve secret key.");
 			return -2;
 		}
 
@@ -2515,10 +2486,10 @@ extract_ephemeral_key(const unsigned char * msg, const unsigned char ** ephem_pk
 			msg_ptr += epk_len;
 			retval = msg_ptr - msg;
 		} else {
-			logit("Length of recovered ephemeral key incorrect - cannot recover data.");
+			error("Length of recovered ephemeral key incorrect - cannot recover data.");
 		}
 	} else {
-		logit("Ephemeral key format incorrect - cannot recover data.");
+		error("Ephemeral key format incorrect - cannot recover data.");
 	}
 
 	return retval;
@@ -2590,20 +2561,20 @@ process_enc_data_hdr(SHA_CTX * sha_ctx, EVP_CIPHER_CTX * aes_ctx, FILE * infile,
 	unsigned char input[512];
 	size_t num_read = fread(input, 1, sizeof(input), infile);
 	if (num_read < MIN_ENC_DATA_HDR_SIZE) {
-		logit("Input too short - cannot recover data.");
+		error("Input too short - cannot recover data.");
 		return -1;
 	}
 
 	EVP_DecryptUpdate(aes_ctx, output, num_dec, input, num_read);
 	if (*num_dec <= AES_BLOCK_SIZE + 2) {
-		logit("Decrypted input too short - cannot recover data.");
+		error("Decrypted input too short - cannot recover data.");
 		return -2;
 	}
 
 	//  The first 16 bytes are random data, then the last two bytes of those 16 should be repeated.
 	if (output[AES_BLOCK_SIZE] != output[AES_BLOCK_SIZE - 2] ||
 			output[AES_BLOCK_SIZE + 1] != output[AES_BLOCK_SIZE - 1]) {
-		logit("Checksum error in header - cannot recover data.");
+		error("Checksum error in header - cannot recover data.");
 		return -3;
 	}
 	unsigned char * optr = output + AES_BLOCK_SIZE + 2;
@@ -2613,7 +2584,7 @@ process_enc_data_hdr(SHA_CTX * sha_ctx, EVP_CIPHER_CTX * aes_ctx, FILE * infile,
 	int     tag_size_len = extract_tag_and_size(optr, &tag, len);
 	optr += tag_size_len;
 	if (tag != GPG_TAG_LITERAL_DATA || *(optr++) != 'b') {	//	We always write literal data in "binary" format)
-		logit("Unexpected data at start of packet - cannot recover data.");
+		error("Unexpected data at start of packet - cannot recover data.");
 		return -4;
 	}
 	int fname_len = *(optr++);
@@ -2674,7 +2645,7 @@ process_enc_data(SHA_CTX * sha_ctx, EVP_CIPHER_CTX * aes_ctx, FILE * infile, FIL
 	while (len > 0) {
 		num_read = fread(input, 1, sizeof(input), infile);
 		if (ferror(infile)) {
-			logit("Error reading input file.");
+			error("Error reading input file.");
 			retval = -1;
 			break;
 		}
@@ -2691,7 +2662,7 @@ process_enc_data(SHA_CTX * sha_ctx, EVP_CIPHER_CTX * aes_ctx, FILE * infile, FIL
 		}
 
 		if (fwrite(output, 1, num_dec, outfile) != (size_t) num_dec) {
-			logit("Error writing output file");
+			error("Error writing output file");
 			retval = -1;
 			break;
 		}
@@ -2723,13 +2694,13 @@ process_enc_data(SHA_CTX * sha_ctx, EVP_CIPHER_CTX * aes_ctx, FILE * infile, FIL
 				if (memcmp(output + 2, digest, sizeof(digest)) == 0) {
 					retval = 0;
 				} else {
-					logit("Invalid Modification Detection Code - cannot recover data.");
+					error("Invalid Modification Detection Code - cannot recover data.");
 				}
 			} else {
-				logit("Length of input incorrect - cannot recover data.");
+				error("Length of input incorrect - cannot recover data.");
 			}
 		} else {
-			logit("Error reading input file.");
+			error("Error reading input file.");
 		}
 	}
 
@@ -3358,28 +3329,36 @@ open_curve25519_seckey_file(const char * seckey_dir, const char * mode, const un
 /**
  *  Attempt to open an output file to hold encrypted data.
  *
- *  For an input path, generate an associated file name for the output (by appending ".iron"). Make sure
- *  that file can be overwritten if it exists, then open the file in "w+" mode.
+ *  For an input path, generate an associated file name for the output (by appending ".iron"). If that file
+ *  already exists, generate a file name using mkstemps.
  *
  *  @param fname Name of input file
- *  @param enc_fname Output - name of associated output file. Should point to at least PATH_MAX + 1 chars
+ *  @param enc_fname Place to write name of output file. Should point to at least PATH_MAX + 1 chars
  *  @return FILE * NULL if unsuccessful, pointer to open file otherwise
  */
 static FILE *
 open_encrypted_output_file(const char * fname, char * enc_fname)
 {
-	strlcpy(enc_fname, fname, PATH_MAX);
-	strlcat(enc_fname, IRON_SECURE_FILE_SUFFIX, PATH_MAX);
-	if (strcmp(fname, enc_fname) == 0) {
-		logit("Input file name too long to append \"%s\".", IRON_SECURE_FILE_SUFFIX);
+	if (strlen(fname) > PATH_MAX - 5 - IRON_SECURE_FILE_SUFFIX_LEN) {
+		error("Input file name too long to append \"%s\".", IRON_SECURE_FILE_SUFFIX);
 		return NULL;
 	}
 
-	FILE * out_file;
-	if (check_write_allowed(enc_fname)) {
-		out_file = fopen(enc_fname, "w+");
+	FILE * out_file = NULL;
+	
+	strcpy(enc_fname, fname);
+	strcat(enc_fname, IRON_SECURE_FILE_SUFFIX);
+
+	if (access(enc_fname, F_OK) == 0) {
+		sprintf(enc_fname, "%s_XXXX%s", fname, IRON_SECURE_FILE_SUFFIX);
+		int fd = mkstemps(enc_fname, IRON_SECURE_FILE_SUFFIX_LEN);
+		if (fd > 0) out_file = fdopen(fd, "w+");
 	} else {
-		out_file = NULL;
+		out_file = fopen(enc_fname, "w+");
+	}
+
+	if (out_file == NULL) {
+		error("Could not open output file %s to hold encrypted data from %s.", enc_fname, fname);
 	}
 
 	return out_file;
@@ -3388,11 +3367,9 @@ open_encrypted_output_file(const char * fname, char * enc_fname)
 /**
  *  Open file to which to write decrypted data.
  *
- *  Given and the path to the encrypted file, generate path to which to write decrypted data, then attempt
- *  to open the file for output. If the output file already exists, prompt user to confirm overwrite.
- *
- *  New name is generated by stripping the ".iron" off the input name, if the input name has that extension.
- *  If not, append ".decrypt".
+ *  Given the path of the encrypted file, generate path to which to write decrypted data by stripping ".iron"
+ *  from the name. If the input file name doesn't have a .iron extension, return an error. Open the generated
+ *  path name for write+ - will overwrite if the file exists.
  *
  *  @param fname Path of input file
  *  @param dec_fname Place to write name of output file. Should be at least PATH_MAX + 1 bytes
@@ -3401,22 +3378,24 @@ open_encrypted_output_file(const char * fname, char * enc_fname)
 static FILE *
 open_decrypted_output_file(const char * fname, char * dec_fname)
 {
+	if (strlen(fname) > PATH_MAX) {
+		error("Name of encrypted file, \"%s\", is too long.", fname);
+		return NULL;
+	}
+
 	FILE * out_file = NULL;
-	strlcpy(dec_fname, fname, PATH_MAX);
+	strcpy(dec_fname, fname);
 	int offset = iron_extension_offset(dec_fname);
 
 	if (offset > 0) {
 		dec_fname[offset] = '\0';
-	} else {
-		strlcat(dec_fname, DECRYPT_SUFFIX, PATH_MAX);
-		if (strcmp(dec_fname, fname) == 0) {
-			error("Input path name too long to append \"%s\" extension.", fname);
-			return NULL;
-		}
-	}
-
-	if (check_write_allowed(dec_fname)) {
 		out_file = fopen(dec_fname, "w+");
+		if (out_file == NULL) {
+			error("Could not open output file %s to hold decrypted data from %s.", dec_fname, fname);
+		}
+	} else {
+		error("Expect the file to be decrypted to have a \"%s\" extension,\n   but \"%s\" does not.",
+			  IRON_SECURE_FILE_SUFFIX, fname);
 	}
 
 	return out_file;
@@ -3881,7 +3860,7 @@ write_encrypted_data_file(FILE * infile, const char * fname, FILE * outfile, uns
 			if ((off_t) total_read == statstr.st_size) {
 				retval = write_gpg_mdc_packet(outfile, &sha_ctx, &aes_ctx);
 			} else {
-				logit("Did not read the complete input file.");
+				error("Did not read the complete input file.");
 				retval = -1;
 			}
 		}
@@ -3948,11 +3927,11 @@ get_public_keys(const char * login, Key * rsa_key, unsigned char * rsa_fp, unsig
 						sshbuf_free(subkey_pkt->data);
 						free(subkey_pkt);
 					} else {
-						logit("Invalid format for public encryption key - could not recover data.");
+						error("Invalid format for public encryption key - could not recover data.");
 						retval = -1;
 					}
 				} else {
-					logit("Unable to retrieve public encryption key - could not recover data.");
+					error("Unable to retrieve public encryption key - could not recover data.");
 					retval = -1;
 				}
 			}
@@ -4339,18 +4318,18 @@ check_iron_keys(void)
 
 		if (retval < 0) {
 			if (errno == EACCES) {
-				logit("No access to the %s directory.", ssh_dir);
+				error("No access to the %s directory.", ssh_dir);
 			}
 			else if (errno == ENOENT) {
 				//  Try to generate key pair and create files.
 				retval = generate_iron_keys(ssh_dir, user_login);
 			}
 			else {
-				logit("Error checking %s - %s", file_name, strerror(errno));
+				error("Error checking %s - %s", file_name, strerror(errno));
 			}
 		}
 	} else {
-		logit("Unable to find .ssh directory for user %s\n", user_login);
+		error("Unable to find .ssh directory for user %s\n", user_login);
 	}
 
 	return retval;
@@ -4368,20 +4347,14 @@ check_iron_keys(void)
  *  @return int - file number of the output file, or negative number if error
  */
 int
-write_gpg_encrypted_file(const char * fname, int write_tmpfile, char * enc_fname)
+write_gpg_encrypted_file(const char * fname, char * enc_fname)
 {
 	if (initialize() != 0) return -1;
 
 	int retval = -1;
 	FILE * infile = fopen(fname, "r");
 	if (infile != NULL) {
-		FILE * outfile;
-		if (write_tmpfile) {
-			outfile = tmpfile();
-		} else {
-			outfile = open_encrypted_output_file(fname, enc_fname);
-		}
-
+		FILE * outfile = open_encrypted_output_file(fname, enc_fname);
 		if (outfile != NULL) {
 			unsigned char sym_key_frame[AES256_KEY_BYTES + AES_WRAP_BLOCK_SIZE];
 			int frame_len = generate_gpg_sym_key_frame(sym_key_frame);
@@ -4405,7 +4378,7 @@ write_gpg_encrypted_file(const char * fname, int write_tmpfile, char * enc_fname
 					}
 				}
 			} else {
-				logit("Unable to generate key to encrypt data.");
+				error("Unable to generate key to encrypt data.");
 			}
 			fflush(outfile);
 			rewind(outfile);
@@ -4442,7 +4415,7 @@ write_gpg_decrypted_file(const char * fname, char * dec_fname)
 
 	FILE * infile = fopen(fname, "r");
 	if (infile == NULL) {
-		logit("Could not open file %s for input.", fname);
+		error("Could not open file %s for input.", fname);
 		return -1;
 	}
 
@@ -4454,7 +4427,7 @@ write_gpg_decrypted_file(const char * fname, char * dec_fname)
 
 	const gpg_public_key * pub_keys = get_recipient_keys(user_login);
 	if (pub_keys == NULL) {
-		logit("Unable to retrieve public IronCore keys for user %s.", user_login);
+		error("Unable to retrieve public IronCore keys for user %s.", user_login);
 		fclose(infile);
 		return -1;
 	}
@@ -4520,13 +4493,7 @@ write_gpg_decrypted_file(const char * fname, char * dec_fname)
 
 					unsigned char * optr = output + rv;
 					FILE * outfile = open_decrypted_output_file(fname, dec_fname);
-
 					if (outfile != NULL) {
-						logit("Decrypting contents of %s into %s", fname, dec_fname);
-						if (strcmp(local_fname, dec_fname) != 0) {
-							logit("    Original name of file that was encrypted was %s", local_fname);
-						}
-
 						//  Flush remainder of output buffer that is file data. May still be some left that is
 						//  all or part of the MDC packet.
 						fwrite(optr, 1, num_dec, outfile);
@@ -4549,7 +4516,7 @@ write_gpg_decrypted_file(const char * fname, char * dec_fname)
 				}
 			}
 		} else {
-			logit("Invalid header on packet in data file - cannot recover data.");
+			error("Invalid header on packet in data file - cannot recover data.");
 		}
 	}
 	fclose(infile);
@@ -4635,7 +4602,7 @@ add_recipient(const char * login)
 	int retval = 0;
 	for (int i = 0; i < num_recipients; i++) {
 		if (strcmp(recipient_list[i].login, login) == 0) {
-			logit("User %s already in the recipient list.", login);
+			error("User %s already in the recipient list.", login);
 			retval = -1;
 			break;
 		}
@@ -4660,7 +4627,7 @@ add_recipient(const char * login)
 							new_ent->fp) == 0) {
 			num_recipients++;
 		} else {
-			logit("Unable to retrieve public key information for user %s", login);
+			error("Unable to retrieve public key information for user %s", login);
 			retval = -1;
 		}
 	}
@@ -4684,7 +4651,7 @@ remove_recipient(const char * login)
 	int retval = -1;
 
 	if (strcmp(login, user_login) == 0) {
-		logit("Current user (%s) cannot be removed from the recipient list. Ignored.", login);
+		error("Current user (%s) cannot be removed from the recipient list. Ignored.", login);
 	} else {
 		int i;
 		for (i = 0; i < num_recipients; i++) {
@@ -4700,7 +4667,7 @@ remove_recipient(const char * login)
 			}
 			num_recipients--;
 		} else {
-			logit("User %s not found in the recipient list.", login);
+			error("User %s not found in the recipient list.", login);
 		}
 	}
 
@@ -5083,10 +5050,9 @@ mainline(int argc, char **argv)
 	num_recipients = 2;
 
 	char enc_fname[PATH_MAX + 1];
-	int outfd = write_gpg_encrypted_file("foob", 0, enc_fname);
+	int outfd = write_gpg_encrypted_file("foob", enc_fname);
 	assert(outfd >= 0);
 	close(outfd);
-	rename("foob", "foob.pre_enc");
 	char dec_fname[PATH_MAX + 1];
 	write_gpg_decrypted_file("foob.iron", dec_fname);
 

@@ -33,10 +33,11 @@
 
 #define IRON_ERR_NOT_ENCRYPTED	-101	//  Attempted to decrypt a file, but didn't find the GPG info we expected
 #define IRON_ERR_NOT_FOR_USER	-102	//  File was encrypted, but not to the user retrieving it
+#define IRON_ERR_NO_OVERWRITE	-103	//  File exists, and user doesn't want to overwrite
 
 
-extern int	check_iron_keys();
-extern int	write_gpg_encrypted_file(const char * fname, int write_tmpfile, char * enc_fname);
+extern int	check_iron_keys(void);
+extern int	write_gpg_encrypted_file(const char * fname, char * enc_fname);
 extern int	write_gpg_decrypted_file(const char * fname, char * dec_fname);
 
 extern void	reset_recipients();

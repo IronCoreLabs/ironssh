@@ -3,9 +3,8 @@
 #include <unistd.h>
 #include <pwd.h>
 #include "includes.h"
+#include "iron-common.h"
 #include "iron-gpg.h"
-
-char * user_login;
 
 int
 main(int argc, char **argv)
@@ -15,42 +14,25 @@ main(int argc, char **argv)
 		return -1;
 	}
 
-	struct passwd * user_pw = getpwuid(getuid());
-	if (user_pw == NULL) {
-		fprintf(stderr, "Unable to determine current user's login\n\n");
-	} else {
-		user_login = strdup(user_pw->pw_name);
-	}
-
-	if (check_iron_keys(user_login) != 0) {
+	if (check_iron_keys() != 0) {
 		fprintf(stderr, "Unable to find or create the necessary keys for current user's login\n\n");
 		return -2;
 	}
 	
-	char new_fname[PATH_MAX + 1];
-	snprintf(new_fname, PATH_MAX, "%s_XXXX", argv[1]);
-	int fd = mkstemp(new_fname);
-	if (fd < 0) {
-		fprintf(stderr, "Unable to create temporary file name\n\n");
-		return -3;
-	}
-
-	unlink(new_fname);
-	if (link(argv[1], new_fname) < 0) {
-		fprintf(stderr, "Unable to create temporary link to file %s\n\n", argv[1]);
-		return -4;
-	}
-	close(fd);
+	//  Create a <infile>.iron file, so that write_gpg_encrypted_file will generate a different output file.
+	char tmp_fname[PATH_MAX + 1];
+	sprintf(tmp_fname, "%s%s", argv[1], IRON_SECURE_FILE_SUFFIX);
+	FILE * tmp_file = fopen(tmp_fname, "w");
+	fclose(tmp_file);
 
 	char enc_fname[PATH_MAX + 1];
-	int outfd = write_gpg_encrypted_file(new_fname, 0, enc_fname);
+	int outfd = write_gpg_encrypted_file(argv[1], enc_fname);
 	if (outfd < 0) {
 		fprintf(stderr, "Unable to write encrypted file for input file %s\n\n", argv[1]);
 		return -5;
 	}
-
 	close(outfd);
-	unlink(new_fname);
+
 	char dec_fname[PATH_MAX + 1];
 	int decfd = write_gpg_decrypted_file(enc_fname, dec_fname);
 	if (decfd < 0) {
@@ -60,10 +42,13 @@ main(int argc, char **argv)
 	close(decfd);
 
 	char cmp_cmd[512];
-	snprintf(cmp_cmd, 511, "cmp %s %s", argv[1], new_fname);
-	if (system(cmp_cmd) != 0) {
+	snprintf(cmp_cmd, 511, "cmp %s %s", argv[1], dec_fname);
+	int rv = system(cmp_cmd);
+	if (rv != 0) {
 		fprintf(stderr, "decrypted file did not match original input file %s\n\n", argv[1]);
-		return -7;
+	}
+	if (unlink(tmp_fname) < 0) {
+		fprintf(stderr, "unable to unlink %s\n\n", tmp_fname);
 	}
 	if (unlink(enc_fname) < 0) {
 		fprintf(stderr, "unable to unlink %s\n\n", enc_fname);
@@ -72,5 +57,5 @@ main(int argc, char **argv)
 		fprintf(stderr, "unable to unlink %s\n\n", dec_fname);
 	}
 
-	return 0;
+	return rv;
 }

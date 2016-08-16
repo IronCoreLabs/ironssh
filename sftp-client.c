@@ -1155,6 +1155,20 @@ send_read_request(struct sftp_conn *conn, u_int id, u_int64_t offset,
 	sshbuf_free(msg);
 }
 
+#ifdef IRONCORE
+static char
+get_yes_no(void)
+{
+	char line[30];
+	fgets(line, sizeof(line), stdin);
+	char yesno = line[0];
+	while (line[strlen(line) - 1] != '\n') {
+		fgets(line, sizeof(line), stdin);
+	}
+	return yesno;
+}
+#endif
+
 int
 do_download(struct sftp_conn *conn, const char *remote_path,
     const char *local_path, Attrib *a, int preserve_flag, int resume_flag,
@@ -1208,6 +1222,41 @@ do_download(struct sftp_conn *conn, const char *remote_path,
 
 	attrib_clear(&junk); /* Send empty attributes */
 
+#ifdef IRONCORE
+	if (strlen(local_path) > PATH_MAX - IRON_SECURE_FILE_SUFFIX_LEN) {
+		error("Local path name %s too long.", local_path);
+		return(-1);
+	}
+	const char * output_path;
+	char iron_name[PATH_MAX + IRON_SECURE_FILE_SUFFIX_LEN + 1];
+	strcpy(iron_name, local_path);
+	int iron_offset = iron_extension_offset(local_path);
+	if (iron_offset < 0) {
+		output_path = local_path;
+		/*  Append .iron extension to download file name  */
+		strcpy(iron_name, local_path);
+		strcat(iron_name, IRON_SECURE_FILE_SUFFIX);
+		local_path = iron_name;
+	} else {
+		/*  Strip .iron extension to create destination name  */
+		iron_name[iron_offset] = '\0';
+		output_path = iron_name;
+	}
+	if (access(output_path, F_OK) == 0) {
+		printf("Output file %s already exists. Overwrite (y/n)? ", output_path);
+		char yesno = get_yes_no();
+		if (yesno != 'y' && yesno != 'Y') {
+			return(-1);
+		}
+	}
+	if (access(local_path, F_OK) == 0) {
+		printf("Download destination file %s already exists. Overwrite (y/n)? ", local_path);
+		char yesno = get_yes_no();
+		if (yesno != 'y' && yesno != 'Y') {
+			return(-1);
+		}
+	}
+#endif
 	/* Send open request */
 	id = conn->msg_id++;
 	if ((r = sshbuf_put_u8(msg, SSH2_FXP_OPEN)) != 0 ||
@@ -1421,10 +1470,9 @@ do_download(struct sftp_conn *conn, const char *remote_path,
 			status = SSH2_FX_OK;
 
 #ifdef IRONCORE
-		/*  After downloading a file, determine whether it is encrypted or not. A ".iron" suffix is not required,
-		 *  in case someone messed around with the files on the server without using ironsftp. If the file was
-		 *  encrypted, decrypt it. The resulting file will be named using the name of the file that was encrypted.
-		 *  (This name is embedded in the encrypted data).
+		/*  After downloading a file, determine whether it is encrypted or not. Because of the gyrations above,
+		 *  it should have a ".iron" suffix. If the file can be decrypted, the output file will have the ".iron"
+		 *  stripped. If the file wasn't encrypted, we should try to rename without the .iron suffix.
 		 */
 		char dec_fname[PATH_MAX + 1];
 		int new_local_fd = write_gpg_decrypted_file(local_path, dec_fname);
@@ -1432,19 +1480,14 @@ do_download(struct sftp_conn *conn, const char *remote_path,
 			close(local_fd);
 			unlink(local_path);
 			local_fd = new_local_fd;
-		} else if (iron_extension_offset(local_path) > 0) {
-			if (new_local_fd == IRON_ERR_NOT_ENCRYPTED) {
-				error("WARNING: The file \"%s\" has a \"%s\" extension,\n"
-					  "but it was not encrypted, so it has been left as it was downloaded.",
-					  local_path, IRON_SECURE_FILE_SUFFIX); 
-			} else if (new_local_fd == IRON_ERR_NOT_FOR_USER) {
-				error("WARNING: The file \"%s\" is encrypted, but access is not granted to you,\n"
-					  "so the unencrypted contents cannot be retrieved.", local_path);
-			} else {
-				error("WARNING: An error occured while trying to decrypt the file \"%s\"\n"
-					  "so it has been left as it was downloaded.",
-					  local_path);
-			}
+		} else if (new_local_fd == IRON_ERR_NOT_ENCRYPTED) {
+			rename(local_path, output_path);
+		} else if (new_local_fd == IRON_ERR_NOT_FOR_USER) {
+			error("WARNING: The file \"%s\" is encrypted, but access is not granted to you,\n"
+				  "so the unencrypted contents cannot be retrieved.", local_path);
+		} else {
+			error("WARNING: An error occured while trying to decrypt the file \"%s\"\n"
+				  "so it has been left as it was downloaded.", local_path);
 		}
 #endif
 		
@@ -1624,6 +1667,23 @@ do_upload(struct sftp_conn *conn, const char *local_path,
 		error("File extension \"%s\" reserved for encrypted files.", IRON_SECURE_FILE_SUFFIX);
 		return(-1);
 	}
+
+	/*  If the destination file name doesn't end in ".iron", append it.  */
+	char remote_iron_name[PATH_MAX + IRON_SECURE_FILE_SUFFIX_LEN + 1];
+	if (iron_extension_offset(remote_path) < 0) {
+		strlcpy(remote_iron_name, remote_path, PATH_MAX);
+		strcat(remote_iron_name, IRON_SECURE_FILE_SUFFIX);
+		remote_path = remote_iron_name;
+	}
+
+	c = do_stat(conn, remote_path, 1);
+	if (c != NULL) {
+		printf("Encrypted file %s exists on remote server. Overwrite (y/n)? ", remote_path);
+		char yesno = get_yes_no();
+		if (yesno != 'y' && yesno != 'Y') {
+			return(-1);
+		}
+	}
 #endif
 
 	if ((local_fd = open(local_path, O_RDONLY, 0)) == -1) {
@@ -1653,11 +1713,13 @@ do_upload(struct sftp_conn *conn, const char *local_path,
 #ifdef IRONCORE
 	/*  Encrypt local file before uploading.  */
 	close(local_fd);
-	local_fd = write_gpg_encrypted_file(local_path, 1, NULL);
+	char enc_fname[PATH_MAX + 1];
+	local_fd = write_gpg_encrypted_file(local_path, enc_fname);
 	if (local_fd < 0) {
 		error("Unable to encrypt local file \"%s\" before uploading.", local_path);
 		return(-1);
 	}
+	unlink(enc_fname);		//  File should disappear as soon as it is closed.
 	if (fstat(local_fd, &sb) == -1) {
 		error("Couldn't fstat encrypted local file: %s", strerror(errno));
 		close(local_fd);
@@ -1720,9 +1782,9 @@ do_upload(struct sftp_conn *conn, const char *local_path,
 	{
 		//  If we are uploading an encrypted file, we should indicate that by adding the .iron
 		//  extension to the name of the file being uploaded.
-		char iron_name[PATH_MAX + 1];
-		snprintf(iron_name, sizeof(iron_name), "%s%s", local_path, IRON_SECURE_FILE_SUFFIX);
-		start_progress_meter(iron_name, sb.st_size, &progress_counter);
+		char local_iron_name[PATH_MAX + 1];
+		snprintf(local_iron_name, sizeof(local_iron_name), "%s%s", local_path, IRON_SECURE_FILE_SUFFIX);
+		start_progress_meter(local_iron_name, sb.st_size, &progress_counter);
 	}
 #else
 		start_progress_meter(local_path, sb.st_size,
