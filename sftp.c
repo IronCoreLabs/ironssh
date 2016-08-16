@@ -799,7 +799,7 @@ process_put(struct sftp_conn *conn, const char *src, const char *dst,
 #ifdef IRONCORE
 		/*  Append .iron extension to destination file name  */
 		char iron_name[PATH_MAX + IRON_SECURE_FILE_SUFFIX_LEN + 1];
-		strlcpy(iron_name, PATH_MAX + 1, abs_dst);
+		strlcpy(iron_name, abs_dst, PATH_MAX + 1);
 		strcat(iron_name, IRON_SECURE_FILE_SUFFIX);
 		free(abs_dst);
 		abs_dst = strdup(iron_name);
