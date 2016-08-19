@@ -30,37 +30,41 @@ main(int argc, char **argv)
 	FILE * tmp_file = fopen(tmp_fname, "w");
 	fclose(tmp_file);
 
+	int retval = 0;
+
 	char enc_fname[PATH_MAX];
 	int outfd = write_gpg_encrypted_file(argv[1], enc_fname);
-	if (outfd < 0) {
+	if (outfd >= 0) {
+		close(outfd);
+		char dec_fname[PATH_MAX];
+		int decfd = write_gpg_decrypted_file(enc_fname, dec_fname);
+		if (decfd >= 0) {
+			close(decfd);
+			char cmp_cmd[512];
+			snprintf(cmp_cmd, 511, "cmp %s %s", argv[1], dec_fname);
+			retval = system(cmp_cmd);
+			if (retval != 0) {
+				fprintf(stderr, "decrypted file did not match original input file \"%s\"\n\n", argv[1]);
+			}
+
+			if (unlink(enc_fname) < 0) {
+				fprintf(stderr, "unable to unlink \"%s\"\n\n", enc_fname);
+			}
+			if (unlink(dec_fname) < 0) {
+				fprintf(stderr, "unable to unlink \"%s\"\n\n", dec_fname);
+			}
+		} else {
+			fprintf(stderr, "Unable to write decrypted file for input file \"%s\"\n\n", argv[1]);
+			retval = -6;
+		}
+	} else {
 		fprintf(stderr, "Unable to write encrypted file for input file \"%s\"\n\n", argv[1]);
-		return -5;
+		retval = -5;
 	}
-	close(outfd);
 
-	char dec_fname[PATH_MAX];
-	int decfd = write_gpg_decrypted_file(enc_fname, dec_fname);
-	if (decfd < 0) {
-		fprintf(stderr, "Unable to write decrypted file for input file \"%s\"\n\n", argv[1]);
-		return -6;
-	}
-	close(decfd);
-
-	char cmp_cmd[512];
-	snprintf(cmp_cmd, 511, "cmp %s %s", argv[1], dec_fname);
-	int rv = system(cmp_cmd);
-	if (rv != 0) {
-		fprintf(stderr, "decrypted file did not match original input file \"%s\"\n\n", argv[1]);
-	}
 	if (unlink(tmp_fname) < 0) {
 		fprintf(stderr, "unable to unlink \"%s\"\n\n", tmp_fname);
 	}
-	if (unlink(enc_fname) < 0) {
-		fprintf(stderr, "unable to unlink \"%s\"\n\n", enc_fname);
-	}
-	if (unlink(dec_fname) < 0) {
-		fprintf(stderr, "unable to unlink \"%s\"\n\n", dec_fname);
-	}
 
-	return rv;
+	return retval;
 }
