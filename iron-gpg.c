@@ -447,6 +447,8 @@ static int		put_bignum(struct sshbuf * buf, const BIGNUM * bignum);
 static void		put_num_sexpr(struct sshbuf * buf, const unsigned char * bstr, int bstr_len);
 static void		populate_ssh_dir(const char * const login, char * ssh_dir);
 static const char * get_user_ssh_dir(const char * const login);
+static int		copy_ssh_key_files(const char * ssh_dir);
+static int		copy_ssh_key_file(const char * ssh_dir, const char * ext);
 static int		load_ssh_private_key(const char * ssh_key_file, const char * prompt, Key ** key);
 static int		retrieve_ssh_private_key(const char * ssh_dir, const char * prompt, Key ** key);
 static int		retrieve_ssh_public_key(const char * ssh_dir, char ** comment);
@@ -801,6 +803,69 @@ get_user_ssh_dir(const char * const login)
 	}
 }
 
+
+/**
+ *  Copy one of the SSH key files to a .iron backup copy.
+ *
+ *  Caller can specify an empty extension, "", to copy the secret key file, or the public extension,
+ *  SSH_KEY_PUB_EXT, to copy the public key file.
+ *
+ *  It is an error if the destination file already exists.
+ *
+ *  @param ssh_dir path to directory that holds key files
+ *  @param ext extension for key file
+ *  @return int 0 if copy successful, negative number if error
+ */
+static int
+copy_ssh_key_file(const char * ssh_dir, const char * ext)
+{
+	int retval = -1;
+	char cp_cmd[2 * PATH_MAX + 4];   //  Room for "cp " and two file names, space-separated, with NULL term.
+
+	char ssh_key_file[PATH_MAX];
+	snprintf(ssh_key_file, PATH_MAX, "%s%s%s", ssh_dir, SSH_KEY_FNAME, ext);
+
+	if (access(ssh_key_file, F_OK) == 0) {
+		char iron_key_file[PATH_MAX];
+		snprintf(iron_key_file, PATH_MAX, "%s%s%s", ssh_dir, IRON_SSH_KEY_FNAME, ext);
+
+		if (access(iron_key_file, F_OK) != 0) {
+			snprintf(cp_cmd, sizeof(cp_cmd), "cp %s %s", ssh_key_file, iron_key_file);
+			if (system(cp_cmd) == 0) {
+				retval = 0;
+			} else {
+				error("Cannot copy \"%s\" to \"%s\".", ssh_key_file, iron_key_file);
+			}
+		} else {
+			error("Destination key file \"%s\" already exists.", iron_key_file);
+		}
+	} else {
+		error("Cannot find key file \"%s\".", ssh_key_file);
+	}
+	
+	return retval;
+}
+
+/**
+ *  Copy the private and public SSH key files to .iron copies
+ *
+ *  @param ssh_dir path to directory that holds key files
+ *  @return int 0 if copy successful, negative number if error
+ */
+static int
+copy_ssh_key_files(const char * ssh_dir)
+{
+	int retval = -1;
+
+	if (copy_ssh_key_file(ssh_dir, "") == 0) {
+		if (copy_ssh_key_file(ssh_dir, SSH_KEY_PUB_EXT) == 0) {
+			retval = 0;
+		}
+	}
+
+	return retval;
+}
+
 /**
  *  Attempt to load SSH private key from specified file.
  *
@@ -825,8 +890,7 @@ load_ssh_private_key(const char * ssh_key_file, const char * prompt, Key ** key)
 /**
  *  Retrieve SSH private key from .ssh directory.
  *
- *  if <ssh_dir>/id_rsa exists, copy it to <ssh_dir>/id_rsa.iron, then try to fetch the private key from the
- *  id_rsa.iron file. Includes retries if user enters incorrect passphrase.
+ *  Try to fetch the private key from the id_rsa.iron file. Includes retries if user enters incorrect passphrase.
  *
  *  @param ssh_dir Name of directory from which to read file
  *  @param prompt String to display to user before reading passphrase ("" to suppress prompt and use no passphrase)
@@ -839,26 +903,17 @@ retrieve_ssh_private_key(const char * ssh_dir, const char * prompt, Key ** key)
 	int retval = -1;
 
 	char ssh_key_file[PATH_MAX];
-	snprintf(ssh_key_file, PATH_MAX, "%s%s", ssh_dir, SSH_KEY_FNAME);
+	snprintf(ssh_key_file, PATH_MAX, "%s%s", ssh_dir, IRON_SSH_KEY_FNAME);
 
-	if (access(ssh_key_file, F_OK) == 0) {
-		char iron_key_file[PATH_MAX];
-		snprintf(iron_key_file, PATH_MAX, "%s%s", ssh_dir, IRON_SSH_KEY_FNAME);
-
-		char cp_cmd[2 * PATH_MAX + 4];   //  Room for "cp " and two file names, space-separated, with NULL term.
-		snprintf(cp_cmd, sizeof(cp_cmd), "cp %s %s", ssh_key_file, iron_key_file);
-		if (system(cp_cmd) == 0) {
-			int retry_ct = 0;
-			retval = load_ssh_private_key(ssh_key_file, prompt, key);
-			while (retval == SSH_ERR_KEY_WRONG_PASSPHRASE && retry_ct < MAX_PASSPHRASE_RETRIES) {
-				retval = load_ssh_private_key(ssh_key_file, "Incorrect passphrase - try again: ", key);
-				retry_ct++;
-			}
-		} else {
-			error("Cannot make copy of \"%s\" to \"%s\".", ssh_key_file, iron_key_file);
+	//  Attempt to load the key with no passphrase, just in case
+	retval = sshkey_load_private(ssh_key_file, "", key, NULL);
+	if (retval == SSH_ERR_KEY_WRONG_PASSPHRASE) {
+		int retry_ct = 0;
+		retval = load_ssh_private_key(ssh_key_file, prompt, key);
+		while (retval == SSH_ERR_KEY_WRONG_PASSPHRASE && retry_ct < MAX_PASSPHRASE_RETRIES) {
+			retval = load_ssh_private_key(ssh_key_file, "Incorrect passphrase - try again: ", key);
+			retry_ct++;
 		}
-	} else {
-		error("Cannot find private key file \"%s\".", ssh_key_file);
 	}
 
 	return retval;
@@ -867,8 +922,8 @@ retrieve_ssh_private_key(const char * ssh_dir, const char * prompt, Key ** key)
 /**
  *  Retrieve SSH public key's comment from .ssh directory.
  *
- *  if <ssh_dir>/id_rsa.pub exists, copy it to <ssh_dir>/id_rsa.iron.pub, then try to fetch the public key
- *  from the id_rsa.iron.pub file.
+ *  Try to fetch the public key from the id_rsa.iron.pub file. Actually only need the comment from it -
+ *  the public key parameters were fetched along with the private key parameters by retrieve_ssh_private_key.
  *
  *  @param ssh_dir Name of directory from which to read file
  *  @param comment Place to write comment string read from file. Caller should free
@@ -882,23 +937,10 @@ retrieve_ssh_public_key(const char * ssh_dir, char ** comment)
 	char ssh_key_file[PATH_MAX];
 	snprintf(ssh_key_file, PATH_MAX, "%s%s%s", ssh_dir, SSH_KEY_FNAME, SSH_KEY_PUB_EXT);
 
-	if (access(ssh_key_file, F_OK) == 0) {
-		char iron_key_file[PATH_MAX];
-		snprintf(iron_key_file, PATH_MAX, "%s%s%s", ssh_dir, IRON_SSH_KEY_FNAME, SSH_KEY_PUB_EXT);
-
-		char cp_cmd[2 * PATH_MAX + 4];   //  Room for "cp " and two file names, space-separated, with NULL term.
-		snprintf(cp_cmd, sizeof(cp_cmd), "cp %s %s", ssh_key_file, iron_key_file);
-		if (system(cp_cmd) == 0) {
-			Key * tmp_key;
-			retval = sshkey_load_public(iron_key_file, &tmp_key, comment);
-			if (retval == 0) {
-				sshkey_free(tmp_key);
-			}
-		} else {
-			error("Cannot make copy of \"%s\" to \"%s\".", ssh_key_file, iron_key_file);
-		}
-	} else {
-		error("Cannot find public key file \"%s\".", ssh_key_file);
+	Key * tmp_key;
+	retval = sshkey_load_public(ssh_key_file, &tmp_key, comment);
+	if (retval == 0) {
+		sshkey_free(tmp_key);
 	}
 
 	return retval;
@@ -3726,9 +3768,7 @@ generate_iron_keys(const char * const ssh_dir, const char * const login)
 		Key * ssh_key;
 		char * comment;
 
-		if (retrieve_ssh_key(ssh_dir, &ssh_key, &comment) == 0) {
-			//if (copy_ssh_key_file(ssh_dir)
-
+		if (copy_ssh_key_files(ssh_dir) == 0 && retrieve_ssh_key(ssh_dir, &ssh_key, &comment) == 0) {
 			char file_name[PATH_MAX];
 			snprintf(file_name, PATH_MAX, "%s%s", ssh_dir, GPG_PUBLIC_KEY_FNAME);
 			FILE * pub_file = fopen(file_name, "w");
@@ -4001,14 +4041,16 @@ read_pubkey_file(const char * login, Key * rsa_key, unsigned char * rsa_fp, unsi
 {
 	int retval = -1;
 
+#define SET_IF_NOT_NULL(fld) if ((fld) != NULL) *(fld) = '\0'
+
 	if (rsa_key != NULL) {
 		RSA_free(rsa_key->rsa);
 		rsa_key->rsa = NULL;
 	}
-	if (rsa_fp != NULL) *rsa_fp = '\0';
-	if (cv25519_key != NULL) *cv25519_key = '\0';
-	if (cv25519_fp != NULL) *cv25519_fp = '\0';
-	if (uid != NULL) *uid = '\0';
+	SET_IF_NOT_NULL(rsa_fp);
+	SET_IF_NOT_NULL(cv25519_key);
+	SET_IF_NOT_NULL(cv25519_fp);
+	SET_IF_NOT_NULL(uid);
 
 	struct passwd * pw = getpwnam(login);
 	if (pw != NULL) {
@@ -4092,22 +4134,14 @@ read_pubkey_file(const char * login, Key * rsa_key, unsigned char * rsa_fp, unsi
 			error("Didn't find RSA key in file.");
 			retval = -1;
 		}
-		if (rsa_fp != NULL && *rsa_fp == '\0') {
-			error("Didn't find RSA key fingerprint in file.");
-			retval = -1;
-		}
-		if (cv25519_key != NULL && *cv25519_key == '\0') {
-			error("Didn't find Curve25519 key in file.");
-			retval = -1;
-		}
-		if (cv25519_fp != NULL && *cv25519_fp == '\0') {
-			error("Didn't find Curve25519 key fingerprint in file.");
-			retval = -1;
-		}
-		if (uid != NULL && *uid == '\0') {
-			error("Didn't find UID fingerprint in file.");
-			retval = -1;
-		}
+
+#define ERR_IF_EMPTY_STR(fld, name) if ((fld) != NULL && *(fld) == '\0') { \
+	error("Didn't find " name " in file."); retval = -1; }
+
+		ERR_IF_EMPTY_STR(rsa_fp, "RSA key fingerprint");
+		ERR_IF_EMPTY_STR(cv25519_key, "Curve25519 key");
+		ERR_IF_EMPTY_STR(cv25519_fp, "Curve25519 key fingerprint");
+		ERR_IF_EMPTY_STR(uid, "User ID");
 	}
 
 	return retval;

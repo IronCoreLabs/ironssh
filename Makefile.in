@@ -168,7 +168,7 @@ libssh.a: $(LIBSSH_OBJS)
 	$(RANLIB) $@
 
 ironsftp$(EXEEXT): $(LIBCOMPAT) iron-sftp.o iron-sftp-client.o iron-sftp-common.o iron-progressmeter.o iron-gpg.o sftp-glob.o libssh.a
-	$(LD) -o $@ iron-sftp.o iron-sftp-client.o iron-sftp-common.o iron-progressmeter.o iron-gpg.o sftp-glob.o $(LDFLAGS) -lsodium -lssh -lopenbsd-compat $(LIBS)
+	$(LD) -o $@ iron-sftp.o iron-sftp-client.o iron-sftp-common.o iron-progressmeter.o iron-gpg.o sftp-glob.o $(LDFLAGS) -lsodium -lssh -lopenbsd-compat $(LIBS) $(LIBEDIT)
 
 iron-sftp.o: sftp.c iron-gpg.h
 	$(CC) $(CFLAGS) $(CPPFLAGS) -DIRONCORE -c sftp.c -o $@
