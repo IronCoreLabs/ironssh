@@ -106,6 +106,23 @@ iron_int_to_buf(int val, u_char * buf)
 }
 
 /**
+ *  Convert four bytes from an array into an integer.
+ *
+ *  @param val buf array from which to read
+ *  @return int extracted integer 
+ */
+u_int32_t
+iron_buf_to_int(const u_char * buf)
+{
+	unsigned int len = 0;
+	for (int i = 0; i < 4; i++) {
+		len = (len << 8) + buf[i];
+	}
+
+	return len;
+}
+
+/**
  *  Write bignum to buffer.
  *
  *  Write an OpenSSL BIGNUM in the MPI format used in GPG into an sshbuf. (two bytes containing the length
@@ -123,7 +140,7 @@ iron_put_bignum(struct sshbuf * buf, const BIGNUM * bignum)
     int num_bytes = BN_num_bytes(bignum);
 
     if (sshbuf_put_u16(buf, num_bits) == 0) {
-        u_char tmp[1032];
+        u_char tmp[2 * GPG_MAX_KEY_SIZE];
         BN_bn2bin(bignum, tmp);
         if (sshbuf_put(buf, tmp, num_bytes) == 0) {
             retval = 0;
@@ -253,7 +270,7 @@ iron_reverse_byte_array_in_place(u_char * arr, unsigned int len) {
  *  @param hash Place to write computed hash - at least SHA_DIGEST_LENGTH bytes
  */
 void
-compute_sha1_hash_sshbuf(const struct sshbuf * buf, u_char * hash)
+iron_compute_sha1_hash_sshbuf(const struct sshbuf * buf, u_char * hash)
 {
     SHA_CTX ctx;
     SHA1_Init(&ctx);
@@ -269,7 +286,7 @@ compute_sha1_hash_sshbuf(const struct sshbuf * buf, u_char * hash)
  *  @param hash Place to write computed hash - at least SHA_DIGEST_LENGTH bytes
  */
 void
-compute_sha1_hash_chars(const u_char * bstr, int bstr_len, u_char * hash)
+iron_compute_sha1_hash_chars(const u_char * bstr, int bstr_len, u_char * hash)
 {
     SHA_CTX ctx;
     SHA1_Init(&ctx);
@@ -278,11 +295,13 @@ compute_sha1_hash_chars(const u_char * bstr, int bstr_len, u_char * hash)
 }
 
 /**
- *  Simultaneously update a SHA1 hash and an AES encryption with data buffer.
+ *  Simultaneously update a SHA1 hash, a SHA256 hash, and an AES encryption with data buffer.
  *
- *  Given a block of data, add to running SHA1 hash, and AES encrypt the data and write to output buffer.
+ *  Given a block of data, add to running SHA1 hash and optionally a SHA256 hash, then AES encrypt the
+ *  data and write to output buffer.
  *
  *  @param sha_ctx Running SHA1 hash
+ *  @param sig_ctx Running SHA256 hash, or NULL to skip SHA256
  *  @param aes_ctx Running AES encryption of data
  *  @param input Buffer to hash/encrypt
  *  @param size Num bytes in input
@@ -290,13 +309,18 @@ compute_sha1_hash_chars(const u_char * bstr, int bstr_len, u_char * hash)
  *  @return int Num bytes written to output
  */
 int
-hashcrypt(SHA_CTX * sha_ctx, EVP_CIPHER_CTX * aes_ctx, const u_char * input, int size, u_char * output)
+iron_hashcrypt(SHA_CTX * mdc_ctx, SHA256_CTX * sig_ctx, EVP_CIPHER_CTX * aes_ctx, const u_char * input,
+	   	  int size, u_char * output)
 {
-    int num_written = -1;
-    SHA1_Update(sha_ctx, input, size);
-    EVP_EncryptUpdate(aes_ctx, output, &num_written, input, size);
-    return num_written;
+	int num_written;
+	SHA1_Update(mdc_ctx, input, size);
+	if (sig_ctx != NULL) {
+		SHA256_Update(sig_ctx, input, size);
+	}
+	if (EVP_EncryptUpdate(aes_ctx, output, &num_written, input, size)) return num_written;
+	else return -1;
 }
+
 
 /**
  *  Sign a hash using an RSA key.
@@ -309,7 +333,7 @@ hashcrypt(SHA_CTX * sha_ctx, EVP_CIPHER_CTX * aes_ctx, const u_char * input, int
  *  @return BIGNUM * bignum containing the computed signature, NULL if error
  */
 BIGNUM *
-compute_rsa_signature(const u_char * digest, size_t digest_len, const Key * key)
+iron_compute_rsa_signature(const u_char * digest, size_t digest_len, const Key * key)
 {
 
     size_t rsa_len = RSA_size(key->rsa);

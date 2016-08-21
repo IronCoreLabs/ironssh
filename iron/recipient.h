@@ -26,14 +26,15 @@
 
 /*  Public keys (signing and encryption) and associated info for the specified login.  */
 typedef struct gpg_public_key {
-    char          login[IRON_MAX_LOGIN_LEN + 1];
-    Key           rsa_key;
-    unsigned char key[crypto_box_PUBLICKEYBYTES];
-    unsigned char fp[GPG_KEY_FP_LEN];
-    unsigned char signer_fp[GPG_KEY_FP_LEN];
+    char       login[IRON_MAX_LOGIN_LEN + 1];
+    Key        rsa_key;
+    u_char     key[crypto_box_PUBLICKEYBYTES];
+    u_char     fp[GPG_KEY_FP_LEN];
+    u_char     signer_fp[GPG_KEY_FP_LEN];
 } gpg_public_key;
 
 extern int                      get_recipients(const gpg_public_key ** recip_list);
 extern const gpg_public_key   * get_recipient_keys(const char * login);
+extern const gpg_public_key   * get_recipient_keys_by_key_id(const char * key_id);
 
 #endif

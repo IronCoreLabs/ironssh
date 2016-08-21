@@ -26,6 +26,9 @@
 //  Functions to manipulate list of registered recipients - the users with which
 //  an uploaded file will be shared.  We have imposed a somewhat arbitrary limit
 //  of 10 recipients (in addition to the current user) for file sharing.
+//
+//  The first entry in the list is always the current user, and that entry will
+//  always be in the list.
 //================================================================================
 
 #define MAX_RECIPIENTS  11
@@ -38,7 +41,7 @@ static int num_recipients = 0;
  *  Return a pointer to the current list of registered recipients. If the list is empty, create it and
  *  put the current user into the list.
  *
- *  @param recip_list Place to write the pointer to the recipient list.
+ *  @param recip_list Place to write the pointer to the recipient list
  *  @return int Num recipients in list, or negative number if error (unable to initialize list)
  */
 int
@@ -72,6 +75,32 @@ get_recipient_keys(const char * login)
     int num_recip = get_recipients(&recip);
     int ct = 0;
     while (ct < num_recip && strcmp(login, recip->login) != 0) {
+        recip++;
+        ct++;
+    }
+
+    if (ct == num_recip) recip = NULL;
+    return recip;
+}
+
+/**
+ *  Return the entry for a specific key ID.
+ *
+ *  The recipient entry has all the user's public key information. It will return the first entry that
+ *  matches the key ID in either the cv25519 or the RSA key ID.
+ *
+ *  @param key_id ID whose entry to fetch
+ *  @returns const gpg_public_key * Pointer to entry for the user, NULL if keys couldn't be retrieved
+ */
+const gpg_public_key *
+get_recipient_keys_by_key_id(const char * key_id)
+{
+    //  Another linear search of recipient list - still no cause for alarm.
+    const gpg_public_key * recip;
+    int num_recip = get_recipients(&recip);
+    int ct = 0;
+    while (ct < num_recip && memcmp(key_id, GPG_KEY_ID_FROM_FP(recip->fp), GPG_KEY_ID_LEN) != 0 &&
+           memcmp(key_id, GPG_KEY_ID_FROM_FP(recip->signer_fp), GPG_KEY_ID_LEN) != 0) {
         recip++;
         ct++;
     }
@@ -122,7 +151,7 @@ add_recipient(const char * login)
             }
         } else {
             error("Recipient list is full - cannot add more.");
-                retval = -1;
+            retval = -1;
         }
     }
 
@@ -132,7 +161,8 @@ add_recipient(const char * login)
 /**
  *  Remove a recipient from registered list.
  *
- *  Remove the entry for the specified user from the list of registered recipients.
+ *  Remove the entry for the specified user from the list of registered recipients. Cannot remove the current
+ *  user.
  *
  *  @param login User to remove
  *  @return int 0 if successful, negative number if error
@@ -148,7 +178,8 @@ remove_recipient(const char * login)
         error("Current user (%s) cannot be removed from the recipient list. Ignored.", login);
     } else {
         int i;
-        for (i = 0; i < num_recipients; i++) {
+        //  Skip the first entry, which is the current user.
+        for (i = 1; i < num_recipients; i++) {
             if (strcmp(recipient_list[i].login, login) == 0) {
                 retval = 0;
                 break;
@@ -171,12 +202,12 @@ remove_recipient(const char * login)
 /**
  *  Reset the registered list.
  *
- *  Empty out the list of registered recipients. The next time it is accessed, it should be repopulated
- *  with the current user's entry.
+ *  Empty out the list of registered recipients, except for the first entry, which should be the current
+ *  user's entry. That one should always be in the list.
  */
 void
 reset_recipients()
 {
-    num_recipients = 0;
+    if (num_recipients >= 1) num_recipients = 1;
 }
 
