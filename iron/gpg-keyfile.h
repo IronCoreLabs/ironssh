@@ -14,19 +14,17 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#ifndef _IRON_GPG_H
-#define _IRON_GPG_H
+#ifndef _IRON_GPG_KEYFILE_H
+#define _IRON_GPG_KEYFILE_H
 
-#define IRON_ERR_NOT_ENCRYPTED	-101	//  Attempted to decrypt a file, but didn't find the GPG info we expected
-#define IRON_ERR_NOT_FOR_USER	-102	//  File was encrypted, but not to the user retrieving it
-#define IRON_ERR_NO_OVERWRITE	-103	//  File exists, and user doesn't want to overwrite
+#include "key.h"
+#include "iron/recipient.h"
 
-extern int	check_iron_keys(void);
-extern int	write_gpg_encrypted_file(const char * fname, char * enc_fname);
-extern int	write_gpg_decrypted_file(const char * fname, char * dec_fname);
+extern int      get_gpg_public_keys(const char * login, Key * rsa_key, u_char * rsa_fp, u_char * key,
+                                    size_t * key_len, u_char * fp);
 
-extern void	reset_recipients();
-extern int	add_recipient(const char * login);
-extern int	remove_recipient(const char * login);
+extern int      get_gpg_secret_encryption_key(const gpg_public_key * pub_keys, u_char * sec_key);
 
-#endif  /* _IRON_GPG_H */
+extern int      iron_retrieve_ssh_private_key(const char * ssh_dir, const char * prompt, Key ** key);
+
+#endif

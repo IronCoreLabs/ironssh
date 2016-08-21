@@ -14,19 +14,26 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#ifndef _IRON_GPG_H
-#define _IRON_GPG_H
+#ifndef _IRON_RECIPIENT_H
+#define _IRON_RECIPIENT_H
 
-#define IRON_ERR_NOT_ENCRYPTED	-101	//  Attempted to decrypt a file, but didn't find the GPG info we expected
-#define IRON_ERR_NOT_FOR_USER	-102	//  File was encrypted, but not to the user retrieving it
-#define IRON_ERR_NO_OVERWRITE	-103	//  File exists, and user doesn't want to overwrite
+#include "key.h"
+#include "sodium.h"
+#include "iron-gpg.h"
+#include "iron/gpg-internal.h"
 
-extern int	check_iron_keys(void);
-extern int	write_gpg_encrypted_file(const char * fname, char * enc_fname);
-extern int	write_gpg_decrypted_file(const char * fname, char * dec_fname);
+#define IRON_MAX_LOGIN_LEN  32
 
-extern void	reset_recipients();
-extern int	add_recipient(const char * login);
-extern int	remove_recipient(const char * login);
+/*  Public keys (signing and encryption) and associated info for the specified login.  */
+typedef struct gpg_public_key {
+    char          login[IRON_MAX_LOGIN_LEN + 1];
+    Key           rsa_key;
+    unsigned char key[crypto_box_PUBLICKEYBYTES];
+    unsigned char fp[GPG_KEY_FP_LEN];
+    unsigned char signer_fp[GPG_KEY_FP_LEN];
+} gpg_public_key;
 
-#endif  /* _IRON_GPG_H */
+extern int                      get_recipients(const gpg_public_key ** recip_list);
+extern const gpg_public_key   * get_recipient_keys(const char * login);
+
+#endif

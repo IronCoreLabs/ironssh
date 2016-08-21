@@ -14,19 +14,9 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#ifndef _IRON_GPG_H
-#define _IRON_GPG_H
+#ifndef _IRON_TRUSTDB_H
+#define _IRON_TRUSTDB_H
 
-#define IRON_ERR_NOT_ENCRYPTED	-101	//  Attempted to decrypt a file, but didn't find the GPG info we expected
-#define IRON_ERR_NOT_FOR_USER	-102	//  File was encrypted, but not to the user retrieving it
-#define IRON_ERR_NO_OVERWRITE	-103	//  File exists, and user doesn't want to overwrite
+int     write_gpg_trustdb_file(const char * ssh_dir, const unsigned char * key, size_t key_len, const char * uid);
 
-extern int	check_iron_keys(void);
-extern int	write_gpg_encrypted_file(const char * fname, char * enc_fname);
-extern int	write_gpg_decrypted_file(const char * fname, char * dec_fname);
-
-extern void	reset_recipients();
-extern int	add_recipient(const char * login);
-extern int	remove_recipient(const char * login);
-
-#endif  /* _IRON_GPG_H */
+#endif
