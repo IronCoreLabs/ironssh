@@ -562,6 +562,8 @@ extract_gpg_rsa_pubkey(const struct sshbuf * buf, Key * rsa_key)
             ptr += 2;
             key_len = (key_len + 7) / 8;    //  Convert from bites to bytes
             if (key_len <= GPG_MAX_KEY_SIZE) {
+                RSA_free(rsa_key->rsa);
+                rsa_key->rsa = RSA_new();
                 rsa_key->rsa->n = BN_new();
                 BN_bin2bn(ptr, key_len, rsa_key->rsa->n);
                 ptr += key_len;
