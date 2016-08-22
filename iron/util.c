@@ -19,6 +19,9 @@
 
 #include "openssl/rsa.h"
 #include "openssl/sha.h"
+
+#include "iron-common.h"
+#include "iron-gpg.h"
 #include "iron/gpg-internal.h"
 #include "iron/util.h"
 
@@ -351,3 +354,22 @@ iron_compute_rsa_signature(const u_char * digest, size_t digest_len, const Key *
 
 }
 
+/**
+ *  Check the directory/file name to see if it ends with the .iron sharing suffix.
+ *
+ *  @param fname Path name to inspect
+ *  @return int Offset of suffix in fname, or -1 if fname doesn't end with suffix
+ */
+int
+iron_extension_offset(const char * name)
+{
+        int retval = -1;
+        int offset = strlen(name) - IRON_SECURE_FILE_SUFFIX_LEN;
+        if (offset >= 0) {
+                if (strcmp(name + offset, IRON_SECURE_FILE_SUFFIX) == 0) {
+                        retval = offset;
+                }
+        }
+
+        return retval;
+}

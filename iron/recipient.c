@@ -45,11 +45,11 @@ static int num_recipients = 0;
  *  @return int Num recipients in list, or negative number if error (unable to initialize list)
  */
 int
-get_recipients(const gpg_public_key ** recip_list)
+iron_get_recipients(const gpg_public_key ** recip_list)
 {
     if (num_recipients == 0) {
         //  The current user is always included in the recipient list, so get that entry added.
-        if (add_recipient(iron_user_login()) != 0) {
+        if (iron_add_recipient(iron_user_login()) != 0) {
             *recip_list = NULL;
             return -1;
         }
@@ -68,11 +68,11 @@ get_recipients(const gpg_public_key ** recip_list)
  *  @returns const gpg_public_key * Pointer to entry for the user, NULL if keys couldn't be retrieved
  */
 const gpg_public_key *
-get_recipient_keys(const char * login)
+iron_get_recipient_keys(const char * login)
 {
     //  High tech linear search of recipient list. It should be short - don't freak out.
     const gpg_public_key * recip;
-    int num_recip = get_recipients(&recip);
+    int num_recip = iron_get_recipients(&recip);
     int ct = 0;
     while (ct < num_recip && strcmp(login, recip->login) != 0) {
         recip++;
@@ -93,11 +93,11 @@ get_recipient_keys(const char * login)
  *  @returns const gpg_public_key * Pointer to entry for the user, NULL if keys couldn't be retrieved
  */
 const gpg_public_key *
-get_recipient_keys_by_key_id(const char * key_id)
+iron_get_recipient_keys_by_key_id(const char * key_id)
 {
     //  Another linear search of recipient list - still no cause for alarm.
     const gpg_public_key * recip;
-    int num_recip = get_recipients(&recip);
+    int num_recip = iron_get_recipients(&recip);
     int ct = 0;
     while (ct < num_recip && memcmp(key_id, GPG_KEY_ID_FROM_FP(recip->fp), GPG_KEY_ID_LEN) != 0 &&
            memcmp(key_id, GPG_KEY_ID_FROM_FP(recip->signer_fp), GPG_KEY_ID_LEN) != 0) {
@@ -122,7 +122,7 @@ get_recipient_keys_by_key_id(const char * key_id)
  *  @return int 0 if successful, negative number if error
  */
 int
-add_recipient(const char * login)
+iron_add_recipient(const char * login)
 {
     int retval = 0;
     for (int i = 0; i < num_recipients; i++) {
@@ -143,7 +143,7 @@ add_recipient(const char * login)
             new_ent->rsa_key.type = KEY_RSA;
             new_ent->rsa_key.ecdsa_nid  = -1;
             if (get_gpg_public_keys(login, &(new_ent->rsa_key), new_ent->signer_fp, new_ent->key, &key_len,
-                                new_ent->fp) == 0) {
+                                    new_ent->fp) == 0) {
                 num_recipients++;
             } else {
                 error("Unable to retrieve public key information for user %s", login);
@@ -168,7 +168,7 @@ add_recipient(const char * login)
  *  @return int 0 if successful, negative number if error
  */
 int
-remove_recipient(const char * login)
+iron_remove_recipient(const char * login)
 {
     if (iron_initialize() != 0) return -1;
 
@@ -206,7 +206,7 @@ remove_recipient(const char * login)
  *  user's entry. That one should always be in the list.
  */
 void
-reset_recipients()
+iron_reset_recipients()
 {
     if (num_recipients >= 1) num_recipients = 1;
 }

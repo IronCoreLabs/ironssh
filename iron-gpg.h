@@ -25,8 +25,10 @@ extern int	check_iron_keys(void);
 extern int	write_gpg_encrypted_file(const char * fname, char * enc_fname);
 extern int	write_gpg_decrypted_file(const char * fname, char * dec_fname);
 
-extern void	reset_recipients();
-extern int	add_recipient(const char * login);
-extern int	remove_recipient(const char * login);
+extern void	iron_reset_recipients();
+extern int	iron_add_recipient(const char * login);
+extern int	iron_remove_recipient(const char * login);
+extern int	iron_extension_offset(const char * name);
+
 
 #endif  /* _IRON_GPG_H */

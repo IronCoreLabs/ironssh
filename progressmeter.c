@@ -41,6 +41,7 @@
 #include "misc.h"
 #ifdef IRONCORE
 #include "iron-common.h"
+#include "iron-gpg.h"
 #endif
 
 #define DEFAULT_WINSIZE 80

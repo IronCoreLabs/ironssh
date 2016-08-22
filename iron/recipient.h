@@ -33,8 +33,8 @@ typedef struct gpg_public_key {
     u_char     signer_fp[GPG_KEY_FP_LEN];
 } gpg_public_key;
 
-extern int                      get_recipients(const gpg_public_key ** recip_list);
-extern const gpg_public_key   * get_recipient_keys(const char * login);
-extern const gpg_public_key   * get_recipient_keys_by_key_id(const char * key_id);
+extern int                      iron_get_recipients(const gpg_public_key ** recip_list);
+extern const gpg_public_key   * iron_get_recipient_keys(const char * login);
+extern const gpg_public_key   * iron_get_recipient_keys_by_key_id(const char * key_id);
 
 #endif

@@ -1128,7 +1128,7 @@ process_data_signature_packet(const u_char * dec_buf, int buf_len, SHA256_CTX * 
 	if (*dptr != hash[0] || *(dptr + 1) != hash[1]) return -12;
 	dptr += 2;
 
-	const gpg_public_key * signer_keys = get_recipient_keys_by_key_id(key_id);
+	const gpg_public_key * signer_keys = iron_get_recipient_keys_by_key_id(key_id);
 	if (signer_keys != NULL) {
 		int sig_len = (*dptr << 8) + *(dptr + 1);	//  Size in bits
 		dptr += 2;

@@ -1751,14 +1751,14 @@ parse_dispatch_command(struct sftp_conn *conn, const char *cmd, char **pwd,
 		break;
 #ifdef IRONCORE
 	case I_ADD_RCPT:
-		if (add_recipient(path1) == 0) {
+		if (iron_add_recipient(path1) == 0) {
 			mprintf("Added login %s to the recipient list\n", path1);
 		} else {
 			err = 1;
 		}
 		break;
 	case I_RM_RCPT:
-		if (remove_recipient(path1) == 0) {
+		if (iron_remove_recipient(path1) == 0) {
 			mprintf("Removed login %s from the recipient list\n", path1);
 		} else {
 			err = 1;

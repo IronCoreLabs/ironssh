@@ -315,7 +315,7 @@ write_gpg_encrypted_file(const char * fname, char * enc_fname)
                 retval = 0;
                 // Need to generate a "Public Key Encrypted Session Key Packet" for each of the recipients.
                 const gpg_public_key * recipient_key;
-                int recip_ct = get_recipients(&recipient_key);
+                int recip_ct = iron_get_recipients(&recipient_key);
                 for (int i = 0; retval == 0 && i < recip_ct; i++) {
                     gpg_packet pkesk;
                     generate_gpg_pkesk_packet(recipient_key + i, sym_key_frame, sizeof(sym_key_frame), &pkesk);
@@ -624,7 +624,7 @@ write_gpg_decrypted_file(const char * fname, char * dec_fname)
     gpg_tag next_tag;
     int     next_len;
 
-    const gpg_public_key * pub_keys = get_recipient_keys(user_login);
+    const gpg_public_key * pub_keys = iron_get_recipient_keys(user_login);
     if (pub_keys == NULL) {
         error("Unable to retrieve public IronCore keys for user %s.", user_login);
         fclose(infile);
