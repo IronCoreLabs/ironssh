@@ -229,9 +229,9 @@ write_encrypted_data_file(FILE * infile, const char * fname, const u_char * sym_
         u_char sig_hdr[7];
         int sig_hdr_len = generate_gpg_tag_and_size(sig_pkt.tag, sig_pkt.len, sig_hdr);
 
-        //  Add everything together to get the SEIPD packet size: random data prefix, OPS, literal data,
-        //  signature, and MDC packets, plus the SEIPD version # prefix
-        int data_len = 1 /* version */ + AES_BLOCK_SIZE + 2 /* random data prefix */ + 
+        //  Add everything together to get the length of the encrypted data that will go into SEIPD packet:
+        //  random data prefix, OPS, literal data, signature, and MDC packets
+        int data_len = AES_BLOCK_SIZE + 2 /* random data prefix */ + 
                        ops_hdr_len + ops_pkt.len /* OPS packet */+
                        data_pkt_hdr_len + statstr.st_size /* literal data packet */ +
                        sig_pkt.len + sig_hdr_len + /* signature packet */
