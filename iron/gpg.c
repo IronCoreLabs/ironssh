@@ -42,6 +42,8 @@ static int      gpg_now;        //  Everything that timestamps a packet during t
                                 //  use this time, so they all get timestamped the same.
 static char   * user_login;     //  Stores the login of the user running the process. Set at initialization.
 
+static char   * user_ssh_dir;   //  The ~/.ssh directory for user_login.
+
 static int      inited = 0;     //  Indicates that the process has initialized everything needed for IronSFTP
 
 /**
@@ -67,6 +69,9 @@ iron_initialize(void)
             fatal("Unable to determine current user's login\n");
         } else {
             user_login = xstrdup(user_pw->pw_name);
+            char ssh_dir[PATH_MAX];
+            sprintf(ssh_dir, "%s/.ssh/", user_pw->pw_dir);
+            user_ssh_dir = xstrdup(ssh_dir);
         }
         inited = 1;
     }
@@ -78,12 +83,21 @@ iron_initialize(void)
 const char *
 iron_user_login(void)
 {
+    if (!inited) iron_initialize();
     return user_login;
+}
+
+const char *
+iron_user_ssh_dir(void)
+{
+    if (!inited) iron_initialize();
+    return user_ssh_dir;
 }
 
 u_int32_t
 iron_gpg_now(void)
 {
+    if (!inited) iron_initialize();
     return gpg_now;
 }
 
@@ -231,7 +245,7 @@ write_encrypted_data_file(FILE * infile, const char * fname, const u_char * sym_
 
         //  Add everything together to get the SEIPD packet size: random data prefix, OPS, literal data,
         //  signature, and MDC packets, plus the SEIPD version # prefix
-        int data_len = 1 /* version */ + AES_BLOCK_SIZE + 2 /* random data prefix */ + 
+        int data_len = AES_BLOCK_SIZE + 2 /* random data prefix */ + 
                        ops_hdr_len + ops_pkt.len /* OPS packet */+
                        data_pkt_hdr_len + statstr.st_size /* literal data packet */ +
                        sig_pkt.len + sig_hdr_len + /* signature packet */

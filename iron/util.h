@@ -37,8 +37,6 @@ extern int      iron_put_bignum(struct sshbuf * buf, const BIGNUM * bignum);
 
 extern void     iron_put_num_sexpr(struct sshbuf * buf, const u_char * bstr, int bstr_len);
 
-extern const char * iron_get_user_ssh_dir(const char * const login);
-
 extern void     iron_reverse_byte_array(const u_char * src, u_char * dst, unsigned int len);
 
 extern void     iron_reverse_byte_array_in_place(u_char * arr, unsigned int len);

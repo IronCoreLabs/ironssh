@@ -123,22 +123,21 @@ open_curve25519_seckey_file(const char * seckey_dir, const char * mode, const u_
  *
  *  It is an error if the destination file already exists.
  *
- *  @param ssh_dir path to directory that holds key files
  *  @param ext extension for key file
  *  @return int 0 if copy successful, negative number if error
  */
 static int
-copy_ssh_key_file(const char * ssh_dir, const char * ext)
+copy_ssh_key_file(const char * ext)
 {
     int retval = -1;
     char cp_cmd[2 * PATH_MAX + 4];   //  Room for "cp " and two file names, space-separated, with NULL term.
 
     char ssh_key_file[PATH_MAX];
-    snprintf(ssh_key_file, PATH_MAX, "%s%s%s", ssh_dir, SSH_KEY_FNAME, ext);
+    snprintf(ssh_key_file, PATH_MAX, "%s%s%s", iron_user_ssh_dir(), SSH_KEY_FNAME, ext);
 
     if (access(ssh_key_file, F_OK) == 0) {
         char iron_key_file[PATH_MAX];
-        snprintf(iron_key_file, PATH_MAX, "%s%s%s", ssh_dir, IRON_SSH_KEY_FNAME, ext);
+        snprintf(iron_key_file, PATH_MAX, "%s%s%s", iron_user_ssh_dir(), IRON_SSH_KEY_FNAME, ext);
 
         if (access(iron_key_file, F_OK) != 0) {
             snprintf(cp_cmd, sizeof(cp_cmd), "cp %s %s", ssh_key_file, iron_key_file);
@@ -160,16 +159,15 @@ copy_ssh_key_file(const char * ssh_dir, const char * ext)
 /**
  *  Copy the private and public SSH key files to .iron copies
  *
- *  @param ssh_dir path to directory that holds key files
  *  @return int 0 if copy successful, negative number if error
  */
 static int
-copy_ssh_key_files(const char * ssh_dir)
+copy_ssh_key_files(void)
 {
     int retval = -1;
 
-    if (copy_ssh_key_file(ssh_dir, "") == 0) {
-        if (copy_ssh_key_file(ssh_dir, SSH_KEY_PUB_EXT) == 0) {
+    if (copy_ssh_key_file("") == 0) {
+        if (copy_ssh_key_file(SSH_KEY_PUB_EXT) == 0) {
             retval = 0;
         }
     }
@@ -178,23 +176,38 @@ copy_ssh_key_files(const char * ssh_dir)
 }
 
 /**
- *  Read login's ~/.pubkey file.
+ *  Generate path of pubkey file for the specified login
  *
- *  Retrieve the IronCore public key entries from the specified login's .pubkey file.
+ *  Helper function to generate the path. This will be ~/.ssh/pubkeys/ironpubkey.<login>.
+ *
+ *  param @login User for whom to fetch the path
+ *  return const char * pointer to path - static buffer, so copy the path before calling again
+ */
+const char *
+iron_get_pubkey_file_name(const char * login)
+{
+    static char fname[PATH_MAX];
+    snprintf(fname, PATH_MAX, "%s%s%s.%s", iron_user_ssh_dir(), IRON_PUBKEY_SUBDIR, IRON_PUBKEY_LOCAL_FNAME, login);
+    return fname;
+}
+
+/**
+ *  Read login's ~/.ironpubkey file.
+ *
+ *  Retrieve the IronCore public key entries from the specified login's .ironpubkey file.
  *
  *  @param login User whose key info to retrieve
- *  @param rsa_key Place to write public portion of RSA key from .pubkey (at least GPG_MAX_KEY_SIZE bytes)
+ *  @param rsa_key Place to write public portion of RSA key from .ironpubkey (at least GPG_MAX_KEY_SIZE bytes)
  *  @param rsa_key_len Place to write num bytes in rsa_key
  *  @param cv25519_key Place to write public portion of Curve25519 key (at least crypto_box_SECRETKEYBYTES bytes)
  *  @param cv25519_key_len Place to write num bytes in cv25519_key
  *  @param rsa_fp Place to write fingerprint of RSA key (at least GPG_KEY_FP_LEN bytes)
  *  @param cv25519_fp Place to write fingerprint of Curve25519 key (at least GPG_KEY_FP_LEN bytes)
- *  @param uid Place to write "user ID" string associated with the keys (at least GPG_MAX_UID_LEN bytes)
  *  @return int 0 if successful, negative number if error
  */
 static int
 read_pubkey_file(const char * login, Key * rsa_key, u_char * rsa_fp, u_char * cv25519_key,
-                 size_t * cv25519_key_len, u_char * cv25519_fp, char * uid)
+                 size_t * cv25519_key_len, u_char * cv25519_fp)
 {
     int retval = -1;
 
@@ -207,79 +220,72 @@ read_pubkey_file(const char * login, Key * rsa_key, u_char * rsa_fp, u_char * cv
     SET_IF_NOT_NULL(rsa_fp);
     SET_IF_NOT_NULL(cv25519_key);
     SET_IF_NOT_NULL(cv25519_fp);
-    SET_IF_NOT_NULL(uid);
 
-    struct passwd * pw = getpwnam(login);
-    if (pw != NULL) {
-        char fname[PATH_MAX];
-        snprintf(fname, PATH_MAX, "%s/.pubkey", pw->pw_dir);
+    const char * pubkey_fname = iron_get_pubkey_file_name(login);
+    FILE * infile = fopen(pubkey_fname, "r");
+    if (infile != NULL) {
+        retval = 0;
+        char line[3000];
+        while (fgets(line, sizeof(line), infile)) {
+            char * lptr = line;
+            char * token;
+            if (strncmp(line, "iron-rsa:", 9) == 0) {
+                token = strsep(&lptr, " ");     // Skip initial "iron-rsa: "
+                token = strsep(&lptr, " ");     // Next string should be the n value
+                if (rsa_key != NULL) {
+                    u_char tval[GPG_MAX_KEY_SIZE];
+                    int tlen = iron_str2hex(token, tval, GPG_MAX_KEY_SIZE);
 
-        FILE * infile = fopen(fname, "r");
-        if (infile != NULL) {
-            retval = 0;
-            char line[3000];
-            while (fgets(line, sizeof(line), infile)) {
-                char * lptr = line;
-                char * token;
-                if (strncmp(line, "iron-rsa:", 9) == 0) {
-                    token = strsep(&lptr, " ");     // Skip initial "iron-rsa: "
-                    token = strsep(&lptr, " ");     // Next string should be the n value
-                    if (rsa_key != NULL) {
-                        u_char tval[GPG_MAX_KEY_SIZE];
+                    if (tlen > 0) {
+                        rsa_key->rsa = RSA_new();
+                        rsa_key->rsa->n = BN_new();
+                        BN_bin2bn(tval, tlen, rsa_key->rsa->n);
+                        token = strsep(&lptr, " ");     // Next string should be the e value
                         int tlen = iron_str2hex(token, tval, GPG_MAX_KEY_SIZE);
-
                         if (tlen > 0) {
-                            rsa_key->rsa = RSA_new();
-                            rsa_key->rsa->n = BN_new();
-                            BN_bin2bn(tval, tlen, rsa_key->rsa->n);
-                            token = strsep(&lptr, " ");     // Next string should be the e value
-                            int tlen = iron_str2hex(token, tval, GPG_MAX_KEY_SIZE);
-                            if (tlen > 0) {
-                                rsa_key->rsa->e = BN_new();
-                                BN_bin2bn(tval, tlen, rsa_key->rsa->e);
-                            } else {
-                                retval = -1;
-                                break;
-                            }
+                            rsa_key->rsa->e = BN_new();
+                            BN_bin2bn(tval, tlen, rsa_key->rsa->e);
                         } else {
                             retval = -1;
                             break;
                         }
                     } else {
-                        token = strsep(&lptr, " ");     // Skip the e value
+                        retval = -1;
+                        break;
                     }
-                    token = strsep(&lptr, " ");
-                    if (rsa_fp != NULL) {
-                        int fp_len = iron_str2hex(token, rsa_fp, GPG_KEY_FP_LEN);
-                        if (fp_len != GPG_KEY_FP_LEN) {
-                            retval = -1;
-                            break;
-                        }
+                } else {
+                    token = strsep(&lptr, " ");     // Skip to the e value
+                }
+                token = strsep(&lptr, " ");         // Move to the fp, then strip the trailing \n
+                if (rsa_fp != NULL) {
+                    lptr = token;
+                    strsep(&lptr, " \n");           // Strip the trailing \n or any space
+                    int fp_len = iron_str2hex(token, rsa_fp, GPG_KEY_FP_LEN);
+                    if (fp_len != GPG_KEY_FP_LEN) {
+                        retval = -1;
+                        break;
                     }
-                    if (uid != NULL) {
-                        token = strsep(&lptr, " ");
-                        strlcpy(uid, token, GPG_MAX_UID_LEN);
+                }
+            } else if (strncmp(line, "iron-cv25519:", 13) == 0) {
+                token = strsep(&lptr, " ");     // Skip initial "iron-cv25519: "
+                token = strsep(&lptr, " ");
+                if (cv25519_key != NULL) {
+                    int klen = iron_str2hex(token, cv25519_key, crypto_box_SECRETKEYBYTES);
+                    if (klen >= 0) {
+                        *cv25519_key_len = klen;
+                    } else {
+                        retval = -1;
+                        break;
                     }
-                } else if (strncmp(line, "iron-cv25519:", 13) == 0) {
-                    token = strsep(&lptr, " ");     // Skip initial "iron-cv25519: "
-                    token = strsep(&lptr, " ");
-                    if (cv25519_key != NULL) {
-                        int klen = iron_str2hex(token, cv25519_key, crypto_box_SECRETKEYBYTES);
-                        if (klen >= 0) {
-                            *cv25519_key_len = klen;
-                        } else {
-                            retval = -1;
-                            break;
-                        }
+                }
+                token = strsep(&lptr, " ");
+                if (rsa_fp != NULL) {
+                    lptr = token;
+                    strsep(&lptr, " \n");           // Strip the trailing \n or any space
+                    if (iron_str2hex(token, cv25519_fp, GPG_KEY_FP_LEN) != GPG_KEY_FP_LEN) {
+                        retval = -1;
+                        break;
                     }
-                    token = strsep(&lptr, " ");
-                    if (rsa_fp != NULL) {
-                        if (iron_str2hex(token, cv25519_fp, GPG_KEY_FP_LEN) != GPG_KEY_FP_LEN) {
-                            retval = -1;
-                            break;
-                        }
-                    }
-                    //  Ignore the uid on the subkey line
                 }
             }
         }
@@ -298,14 +304,13 @@ read_pubkey_file(const char * login, Key * rsa_key, u_char * rsa_fp, u_char * cv
         ERR_IF_EMPTY_STR(rsa_fp, "RSA key fingerprint");
         ERR_IF_EMPTY_STR(cv25519_key, "Curve25519 key");
         ERR_IF_EMPTY_STR(cv25519_fp, "Curve25519 key fingerprint");
-        ERR_IF_EMPTY_STR(uid, "User ID");
     }
 
     return retval;
 }
 
 /**
- *  Write a line to the user's .pubkey file containing specified RSA key info.
+ *  Write a line to the user's .ironpubkey file containing specified RSA key info.
  *
  *  Write the key name, public key n, public key e, fingerprint, and UID in one line to the file.
  *  Writes the key name as "iron-rsa".
@@ -313,11 +318,10 @@ read_pubkey_file(const char * login, Key * rsa_key, u_char * rsa_fp, u_char * cv
  *  @param outfile File to which to write line
  *  @param key RSA key to write as two hex strings (n and e)
  *  @param fp Byte array containing key fingerprint. Converted to hax string
- *  @param uid String identifying user (typically "Name <emailaddr>")
  *  @return int 0 if successful, negative number if error
  */
 static int
-write_rsa_key_to_pubkey(FILE * outfile, const Key * rsa_key, const u_char * fp, const char * uid)
+write_rsa_key_to_pubkey(FILE * outfile, const Key * rsa_key, const u_char * fp)
 {
     int retval = -1;
 
@@ -331,7 +335,7 @@ write_rsa_key_to_pubkey(FILE * outfile, const Key * rsa_key, const u_char * fp, 
         iron_hex2str(pval, plen, tmp);
         fprintf(outfile, "%s ", tmp);
         iron_hex2str(fp, GPG_KEY_FP_LEN, tmp);
-        if (fprintf(outfile, "%s %s\n", tmp, uid) > 0) {
+        if (fprintf(outfile, "%s\n", tmp) > 0) {
             retval = 0;
         }
     }
@@ -339,7 +343,7 @@ write_rsa_key_to_pubkey(FILE * outfile, const Key * rsa_key, const u_char * fp, 
 }
 
 /**
- *  Write a line to the user's .pubkey file containing specified key info.
+ *  Write a line to the user's .ironpubkey file containing specified key info.
  *
  *  Write the key name, public key, fingerprint, and UID in one line to the file.
  *
@@ -348,12 +352,11 @@ write_rsa_key_to_pubkey(FILE * outfile, const Key * rsa_key, const u_char * fp, 
  *  @param key Public key to write as hex string
  *  @param len Num bytes in key
  *  @param fp Byte array containing key fingerprint. Converted to hax string
- *  @param uid String identifying user (typically "Name <emailaddr>")
  *  @return int 0 if successful, negative number if error
  */
 static int
 write_key_to_pubkey(FILE * outfile, const char * key_name, const u_char * pub_key, int len,
-                    const u_char * fp, const char * uid)
+                    const u_char * fp)
 {
     int retval = -1;
 
@@ -361,7 +364,7 @@ write_key_to_pubkey(FILE * outfile, const char * key_name, const u_char * pub_ke
     iron_hex2str(pub_key, len, tmp);
     if (fprintf(outfile, "iron-%s: %s ", key_name, tmp) > 0) {
         iron_hex2str(fp, GPG_KEY_FP_LEN, tmp);
-        if (fprintf(outfile, "%s %s\n", tmp, uid) > 0) {
+        if (fprintf(outfile, "%s\n", tmp) > 0) {
             retval = 0;
         }
     }
@@ -369,83 +372,33 @@ write_key_to_pubkey(FILE * outfile, const char * key_name, const u_char * pub_ke
 }
 
 /**
- *  Write RSA and cv25519 key entries to .pubkey file for login.
+ *  Write RSA and cv25519 key entries to ironpubkey file for current user login.
  *
- *  If file already exists, create new file that contains all lines that don't start with "iron-",
- *  then write lines for RSA key and cv25519 key. If file doesn't exist, create new one with those
- *  two entries.
+ *  Creates ~/.ssh/ironpubkey, then write lines for the RSA key and the cv25519 key.
+ *  If file already exists, it is overwritten.
  *
- *  @param login Login of user for which to write .pubkey
  *  @param rsa_key RSA key to write to file (only need public params n and e populated)
  *  @param subkey Public cv25519 key
- *  @param uid String identifying user (typically "Name <emailaddr>")
  *  @param key_fp Byte array containing fingerprint for RSA key
  *  @param subkey_fp Byte array containing fingerprint for cv25519 key
  *  @return int 0 if successful, negative number if error
  */
 static int
-write_pubkey_file(const char * login, Key * rsa_key, const u_char * key_fp, const u_char * subkey,
-                  const u_char * subkey_fp, const char * uid)
+write_pubkey_file(Key * rsa_key, const u_char * key_fp, const u_char * subkey,
+                  const u_char * subkey_fp)
 {
     int retval = -1;
 
     char fname[PATH_MAX];
-    struct passwd * pw = getpwnam(login);
-    if (pw != NULL) {
-        snprintf(fname, PATH_MAX, "%s/.pubkey", pw->pw_dir);
+    snprintf(fname, PATH_MAX, "%s%s", iron_user_ssh_dir(), IRON_PUBKEY_LOCAL_FNAME);
 
-        FILE * outfile = NULL;
-        int shuffle_files;
-        char tname[PATH_MAX];
-        FILE * infile;
-
-        if (access(fname, F_OK) == 0) {
-            //  File already exists - copy all the non-IronCore lines from it to a new file
-            shuffle_files = 1;
-            infile = fopen(fname, "r");
-            if (infile != NULL) {
-                snprintf(tname, PATH_MAX, "%s/.pubkey.XXXXXX", pw->pw_dir);
-                int fd = mkstemp(tname);
-                if (fd > 0) outfile = fdopen(fd, "w");
-                if (outfile != NULL) {
-                    //  Arbitrarily chose a length to handle long lines in input file. However, if a line
-                    //  is longer than that length and gets split across multiple fgets() calls, make sure
-                    //  to discard or keep the entire line.
-                    char line[301];
-                    int at_start_of_line = 1;
-                    int discard_next = 0;
-                    while (fgets(line, sizeof(line), infile)) {
-                        int skip_output = (discard_next || (strncmp(line, "iron-", 5) == 0 && at_start_of_line));
-                        if (!skip_output) fputs(line, outfile);
-                        at_start_of_line = (line[strlen(line) - 1] == '\n');
-                        discard_next = skip_output && !at_start_of_line;
-                    }
-                } else {
-                    error("Unable to open temporary file for output to copy pubkey file.");
-                }
-            } else {
-                error("Unable to open \"%s\" for input.", fname);
-            }
-        } else {
-            //  Starting with a fresh file
-            shuffle_files = 0;
-            outfile = fopen(fname, "w");
-        }
-
-        if (outfile != NULL) {
-            if (write_rsa_key_to_pubkey(outfile, rsa_key, key_fp, uid) == 0) {
-                if (write_key_to_pubkey(outfile, "cv25519", subkey, crypto_box_PUBLICKEYBYTES, subkey_fp,
-                            uid) == 0) {
-                    fchmod(fileno(outfile), S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
-                    fclose(outfile);
-
-                    if (shuffle_files) {
-                        fclose(infile);
-                        unlink(fname);
-                        rename(tname, fname);
-                    }
-                    retval = 0;
-                }
+    FILE * outfile = fopen(fname, "w");
+    if (outfile != NULL) {
+        if (write_rsa_key_to_pubkey(outfile, rsa_key, key_fp) == 0) {
+            if (write_key_to_pubkey(outfile, "cv25519", subkey, crypto_box_PUBLICKEYBYTES, subkey_fp) == 0) {
+                fchmod(fileno(outfile), S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+                fclose(outfile);
+                retval = 0;
             }
         }
     }
@@ -479,18 +432,17 @@ load_ssh_private_key(const char * ssh_key_file, const char * prompt, Key ** key)
  *
  *  Try to fetch the private key from the id_rsa.iron file. Includes retries if user enters incorrect passphrase.
  *
- *  @param ssh_dir Name of directory from which to read file
  *  @param prompt String to display to user before reading passphrase ("" to suppress prompt and use no passphrase)
  *  @param key Place to write SSH key read from file.  Caller should sshkey_free
  *  @returns int 0 if successful, negative number if error
  */
 int
-iron_retrieve_ssh_private_key(const char * ssh_dir, const char * prompt, Key ** key)
+iron_retrieve_ssh_private_key(const char * prompt, Key ** key)
 {
     int retval = -1;
 
     char ssh_key_file[PATH_MAX];
-    snprintf(ssh_key_file, PATH_MAX, "%s%s", ssh_dir, IRON_SSH_KEY_FNAME);
+    snprintf(ssh_key_file, PATH_MAX, "%s%s", iron_user_ssh_dir(), IRON_SSH_KEY_FNAME);
 
     //  Attempt to load the key with no passphrase, just in case
     retval = sshkey_load_private(ssh_key_file, "", key, NULL);
@@ -512,17 +464,16 @@ iron_retrieve_ssh_private_key(const char * ssh_dir, const char * prompt, Key ** 
  *  Try to fetch the public key from the id_rsa.iron.pub file. Actually only need the comment from it -
  *  public key parameters were fetched along with private key parameters by iron_retrieve_ssh_private_key.
  *
- *  @param ssh_dir Name of directory from which to read file
  *  @param comment Place to write comment string read from file. Caller should free
  *  @returns int 0 if successful, negative number if error
  */
 static int
-retrieve_ssh_public_key(const char * ssh_dir, char ** comment)
+retrieve_ssh_public_key(char ** comment)
 {
     int retval = -1;
 
     char ssh_key_file[PATH_MAX];
-    snprintf(ssh_key_file, PATH_MAX, "%s%s%s", ssh_dir, SSH_KEY_FNAME, SSH_KEY_PUB_EXT);
+    snprintf(ssh_key_file, PATH_MAX, "%s%s%s", iron_user_ssh_dir(), SSH_KEY_FNAME, SSH_KEY_PUB_EXT);
 
     Key * tmp_key;
     retval = sshkey_load_public(ssh_key_file, &tmp_key, comment);
@@ -541,19 +492,18 @@ retrieve_ssh_public_key(const char * ssh_dir, char ** comment)
  *
  *  *** Currently only handles RSA files.
  *
- *  @param ssh_dir Path to user's ssh directory
  *  @param key Place to write pointer to key read from file. Caller should sshkey_free
  *  @param comment Place to write pointer to comment read from public key file. Caller should free
  */
 static int
-retrieve_ssh_key(const char * const ssh_dir, Key ** key, char ** comment)
+retrieve_ssh_key(Key ** key, char ** comment)
 {
-    int retval = iron_retrieve_ssh_private_key(ssh_dir, "Enter passphrase for SSH key file: ", key);
+    int retval = iron_retrieve_ssh_private_key("Enter passphrase for SSH key file: ", key);
 
     //  If we succeeded in reading the private key, read the public key to get the comment field,
     //  which will typically be the user's identification (i.e. email address)
     if (retval == 0) {
-        retval = retrieve_ssh_public_key(ssh_dir, comment);
+        retval = retrieve_ssh_public_key(comment);
     }
 
     return retval;
@@ -562,9 +512,10 @@ retrieve_ssh_key(const char * const ssh_dir, Key ** key, char ** comment)
 /**
  *  Retrieve public part of signing and encryption key pairs for specified login.
  *
- *  Attempt to read the public parts of the signing (RSA) key and encryption (cv25519) keys from the
- *  specified login's ~/.pubkey file. If that file is not available, read the public RSA key and
- *  encryption subkey for the login from the ~<login>/.ssh/pubkey.gpg file.
+ *  If the login is not the current user, attempt to read the public parts of the signing (RSA) key and
+ *  encryption (cv25519) keys from the specified login's ~/.ironpubkey file.
+ *  For the current login, read the public RSA key and encryption subkey for the login from the 
+ *  ~<login>/.ssh/pubkey.gpg file.
  *
  *  @param login Name of the user for whom to find the key
  *  @param key Place to put public portion of Curve25519 key (at least crypto_box_PUBLICKEYBYTES bytes)
@@ -578,14 +529,15 @@ int
 get_gpg_public_keys(const char * login, Key * rsa_key, u_char * rsa_fp, u_char * key,
                     size_t * key_len, u_char * fp)
 {
-    int retval = read_pubkey_file(login, rsa_key, rsa_fp, key, key_len, fp, NULL);
-    if (retval != 0) {
-        //  Couldn't get data from the user's .pubkey file - fetch from pubring.gpg
+    int retval = -1;
+    if (strcmp(login, iron_user_login()) != 0) {
+        retval = read_pubkey_file(login, rsa_key, rsa_fp, key, key_len, fp);
+    } else {
+        //  Fetch current login's keys from pubring.gpg
         char key_file_name[PATH_MAX];
         FILE * key_file;
 
-        const char * ssh_dir = iron_get_user_ssh_dir(login);
-        snprintf(key_file_name, PATH_MAX, "%s%s", ssh_dir, GPG_PUBLIC_KEY_FNAME);
+        snprintf(key_file_name, PATH_MAX, "%s%s", iron_user_ssh_dir(), GPG_PUBLIC_KEY_FNAME);
         key_file = fopen(key_file_name, "r");
         if (key_file != NULL) {
             retval = 0;
@@ -634,16 +586,15 @@ get_gpg_public_keys(const char * login, Key * rsa_key, u_char * rsa_fp, u_char *
  *
  *  Looks in the specified path for a private-keys-v1.d subdirectory.
  *
- *  @param ssh_dir Path to the user's .ssh directory (usually under ~<login>
  *  @return char * Path of private key subdir (at least PATH_MAX chars). Caller should free
  */
 char *
-iron_check_seckey_dir(const char * ssh_dir)
+iron_check_seckey_dir(void)
 {
     char dir_name[PATH_MAX];
     char * name_ptr = NULL;
 
-    int len = snprintf(dir_name, PATH_MAX, "%s%s/", ssh_dir, GPG_SECKEY_SUBDIR);
+    int len = snprintf(dir_name, PATH_MAX, "%s%s/", iron_user_ssh_dir(), GPG_SECKEY_SUBDIR);
     if (len < (int) sizeof(dir_name)) {
         if (mkdir(dir_name, 0700) == 0 || errno == EEXIST) {
             name_ptr = xstrdup(dir_name);
@@ -733,7 +684,6 @@ write_public_key_file(FILE * pub_file, const Key * ssh_key, const u_char * pub_s
  *  are encrypted, using the supplied passphrase to generate the key. If the secret key files already exist,
  *  they are overwritten.
  *
- *  @param ssh_dir Path to the user's .ssh directory (usually under ~<login>)
  *  @param ssh_key RSA key, both public and secret parts
  *  @param q Cv25519 public key
  *  @param q_len num bytes in q
@@ -742,11 +692,11 @@ write_public_key_file(FILE * pub_file, const Key * ssh_key, const u_char * pub_s
  *  @return int 0 if successful, negative number if error
  */
 static int
-write_secret_key_files(const char * ssh_dir, const Key * ssh_key, const u_char * q, int q_len,
-                       const u_char * d, int d_len, const char * passphrase)
+write_secret_key_files(const Key * ssh_key, const u_char * q, int q_len, const u_char * d, int d_len,
+                       const char * passphrase)
 {
     int retval = -1;
-    char * seckey_dir = iron_check_seckey_dir(ssh_dir);
+    char * seckey_dir = iron_check_seckey_dir();
 
     if (seckey_dir) {
         FILE * rsa_key_file = open_rsa_seckey_file(seckey_dir, "w", ssh_key);
@@ -796,85 +746,76 @@ write_secret_key_files(const char * ssh_dir, const Key * ssh_key, const u_char *
  *  access to the passphrase from the SSH key file, so we generate a new passphase using the secret key params
  *  from the SSH key.
  *
- *  @param ssh_dir Path to the ~<login>/.ssh directory where we will store the generated files
  *  @param login Login of the user - most likely the user running the executable
  *  @return int 0 if successful, negative number if error
  */
-static int
-generate_iron_keys(const char * const ssh_dir, const char * const login)
+int
+iron_generate_keys(void)
 {
     int retval = -1;
-    if (ssh_dir != NULL && *ssh_dir) {
-        printf("\nYou do not appear to have IronCore keys in your .ssh directory\n"
-               "(%s), so they will be generated them for you.\n\n"
-               "To do this, you need to have an RSA key stored in ~/.ssh/%s.\n"
-               "(This key should be protected by a passphrase!)\n"
-               "Your %s file will be copied to ~/.ssh/%s, and your %s.pub\n"
-               "file to ~/.ssh/%s.pub. The %s file will be opened to\n"
-               "retrieve the RSA key. This may prompt you to enter your passphrase.\n"
-               "Please do so.\n\n"
-               "Once you have successfully entered your passphrase, the RSA key will be\n"
-               "retrieved and used to create a new key file, ~/.ssh/%s.\n"
-               "Your SSH RSA key will be added as the master key in that file, and a\n"
-               "new encryption key will be generated and added as a subkey.\n\n"
-               "These keys will be used to transparently encrypt any file that you upload\n"
-               "(via 'put'), and to decrypt any file that you download (via 'get').\n\n"
-               "Note that the new key files that are generated are compatible with GPG\n"
-               "v. 2.1.14 and newer.\n\n",
-               ssh_dir, SSH_KEY_FNAME, SSH_KEY_FNAME, IRON_SSH_KEY_FNAME, SSH_KEY_FNAME, IRON_SSH_KEY_FNAME,
-               IRON_SSH_KEY_FNAME, GPG_PUBLIC_KEY_FNAME);
+    printf("\nYou do not appear to have IronCore keys in your .ssh directory\n"
+           "(%s), so they will be generated for you.\n\n"
+           "To do this, you need to have an RSA key stored in ~/.ssh/%s.\n"
+           "You may be prompted to enter your passphrase to continue, to prove that you\n"
+           "have access to your private RSA key.\n\n"
+           "Your %s file will be copied to ~/.ssh/%s, and your %s.pub\n"
+           "file to ~/.ssh/%s.pub. A new key file, ~/.ssh/%s,\n"
+           "will be created and populated with signing and encryption keys that will\n"
+           "transparently secure any file that you upload ('put') or download ('get').\n\n"
+           "NOTE: the new key files are compatible with GPG v. 2.1.14 and newer.\n",
+           iron_user_ssh_dir(), SSH_KEY_FNAME, SSH_KEY_FNAME, IRON_SSH_KEY_FNAME, SSH_KEY_FNAME, IRON_SSH_KEY_FNAME,
+           GPG_PUBLIC_KEY_FNAME);
 
-        u_char pub_key[crypto_box_PUBLICKEYBYTES];
-        u_char sec_key[crypto_box_SECRETKEYBYTES];
-        crypto_box_keypair(pub_key, sec_key);
-        clamp_and_reverse_seckey(sec_key);
+    u_char pub_key[crypto_box_PUBLICKEYBYTES];
+    u_char sec_key[crypto_box_SECRETKEYBYTES];
+    crypto_box_keypair(pub_key, sec_key);
+    clamp_and_reverse_seckey(sec_key);
 
-        Key * ssh_key;
-        char * comment;
+    Key * ssh_key;
+    char * comment;
 
-        if (copy_ssh_key_files(ssh_dir) == 0 && retrieve_ssh_key(ssh_dir, &ssh_key, &comment) == 0) {
-            char file_name[PATH_MAX];
-            snprintf(file_name, PATH_MAX, "%s%s", ssh_dir, GPG_PUBLIC_KEY_FNAME);
-            FILE * pub_file = fopen(file_name, "w");
-            if (pub_file != NULL) {
-                u_char key_fp[GPG_KEY_FP_LEN];
-                u_char subkey_fp[GPG_KEY_FP_LEN];
+    if (copy_ssh_key_files() == 0 && retrieve_ssh_key(&ssh_key, &comment) == 0) {
+        char file_name[PATH_MAX];
+        snprintf(file_name, PATH_MAX, "%s%s", iron_user_ssh_dir(), GPG_PUBLIC_KEY_FNAME);
+        FILE * pub_file = fopen(file_name, "w");
+        if (pub_file != NULL) {
+            u_char key_fp[GPG_KEY_FP_LEN];
+            u_char subkey_fp[GPG_KEY_FP_LEN];
 
-                fchmod(fileno(pub_file), S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+            fchmod(fileno(pub_file), S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
 
-                const char * uid;
+            const char * uid;
 
-                //  If the ssh key file contained a comment, it was probably the user name / email address.
-                //  Use that for the GPG UID packet. Otherwise, just use the login - best we can do.
-                if (comment && *comment) {
-                    uid = comment;
-                } else {
-                    uid = login;
-                }
+            //  If the ssh key file contained a comment, it was probably the user name / email address.
+            //  Use that for the GPG UID packet. Otherwise, just use the login - best we can do.
+            if (comment && *comment) {
+                uid = comment;
+            } else {
+                uid = iron_user_login();
+            }
 
-                if (write_public_key_file(pub_file, ssh_key, pub_key, uid, key_fp, subkey_fp) == 0) {
-                    char passphrase[512];
-                    if ((generate_gpg_passphrase_from_rsa(ssh_key, passphrase) == 0) &&
-                        (write_secret_key_files(ssh_dir, ssh_key, pub_key, sizeof(pub_key), sec_key,
-                                sizeof(sec_key), passphrase) == 0)) {
-                        printf("\nGenerated new GPG secret keys - they are protected with the passphrase\n"
-                               "    %s\n\n"
-                               "You will need this passphrase if you want to decrypt any '.iron' files\n"
-                               "directly with GPG. No need to store it, though - it is generated using\n"
-                               "your SSH RSA key, so you can use the iron-passphrase utility to generate\n"
-                               "it at any time. You just need to enter the passphrase for your RSA key.\n\n",
-                               passphrase);
+            if (write_public_key_file(pub_file, ssh_key, pub_key, uid, key_fp, subkey_fp) == 0) {
+                char passphrase[512];
+                if ((generate_gpg_passphrase_from_rsa(ssh_key, passphrase) == 0) &&
+                    (write_secret_key_files(ssh_key, pub_key, sizeof(pub_key), sec_key,
+                            sizeof(sec_key), passphrase) == 0)) {
+                    printf("\nGenerated new GPG secret keys - they are protected with the passphrase\n"
+                           "    %s\n\n"
+                           "You will need this passphrase if you want to decrypt any '.iron' files\n"
+                           "directly with GPG. No need to store it, though - it is generated using\n"
+                           "your SSH RSA key, so you can use the iron-passphrase utility to generate\n"
+                           "it at any time. You just need to enter the passphrase for your RSA key.\n\n",
+                           passphrase);
 
-                        if (write_gpg_trustdb_file(ssh_dir, key_fp, sizeof(key_fp), uid) == 0 &&
-                            write_pubkey_file(login, ssh_key, key_fp, pub_key, subkey_fp, uid) == 0) {
-                            retval = 0;
-                        }
+                    if (write_gpg_trustdb_file(key_fp, sizeof(key_fp), uid) == 0 &&
+                        write_pubkey_file(ssh_key, key_fp, pub_key, subkey_fp) == 0) {
+                        retval = 0;
                     }
                 }
-                fclose(pub_file);
-            } else {
-                error("Unable to open \"%s\" to write public key.", file_name);
             }
+            fclose(pub_file);
+        } else {
+            error("Unable to open \"%s\" to write public key.", file_name);
         }
     }
 
@@ -888,43 +829,30 @@ generate_iron_keys(const char * const ssh_dir, const char * const login)
  *  exist and are accessible. If not, and if we have access to the login's .ssh directory, try to create
  *  new files.
  *
- *  @param login Login of the target user (usually the user running the executable)
- *  @return int zero if keys in place, negative number if error
+ *  @return int 1 if keys in place, 0 if not, -1 if error
  */
 int
-check_iron_keys(void)
+iron_check_keys(void)
 {
     if (iron_initialize() != 0) return -1;
 
     int retval = -1;
-    const char * ssh_dir = iron_get_user_ssh_dir(iron_user_login());
-    if (ssh_dir != NULL && *ssh_dir) {
-        char file_name[PATH_MAX];
-        snprintf(file_name, PATH_MAX, "%s%s", ssh_dir, GPG_PUBLIC_KEY_FNAME);
+    char file_name[PATH_MAX];
+    snprintf(file_name, PATH_MAX, "%s%s", iron_user_ssh_dir(), GPG_PUBLIC_KEY_FNAME);
 
-        if (access(file_name, F_OK) == 0) {
-            char * seckey_dir = iron_check_seckey_dir(ssh_dir);
-            if (seckey_dir != NULL) {
-                //  If the directory is there, assume that the key files are in place.
-                retval = 0;
-                free(seckey_dir);
-            }
+    if (access(file_name, F_OK) == 0) {
+        char * seckey_dir = iron_check_seckey_dir();
+        if (seckey_dir != NULL) {
+            //  If the directory is there, assume that the key files are in place.
+            retval = 1;
+            free(seckey_dir);
         }
+    }
 
-        if (retval < 0) {
-            if (errno == EACCES) {
-                error("No access to the \"%s\" directory.", ssh_dir);
-            }
-            else if (errno == ENOENT) {
-                //  Try to generate key pair and create files.
-                retval = generate_iron_keys(ssh_dir, iron_user_login());
-            }
-            else {
-                error("Error checking \"%s\" - %s", file_name, strerror(errno));
-            }
-        }
-    } else {
-        error("Unable to find .ssh directory for user %s\n", iron_user_login());
+    if (retval < 0) {
+        if (errno == ENOENT) retval = 0;
+        else if (errno == EACCES) error("No access to the \"%s\" file.", file_name);
+        else error("Error checking \"%s\" - %s", file_name, strerror(errno));
     }
 
     return retval;
@@ -949,8 +877,7 @@ get_gpg_secret_signing_key(Key * rsa_key)
     if (rsa_key->rsa->d != NULL) return 0;      //  Already fetched
 
 	int retval = -1;
-	const char * ssh_dir = iron_get_user_ssh_dir(iron_user_login());
-	char * seckey_dir = iron_check_seckey_dir(ssh_dir);
+	char * seckey_dir = iron_check_seckey_dir();
 	if (seckey_dir != NULL) {
 		FILE * infile = open_rsa_seckey_file(seckey_dir, "r", rsa_key);
 		if (infile != NULL) {
@@ -991,8 +918,7 @@ get_gpg_secret_encryption_key(const gpg_public_key * pub_keys, u_char * sec_key)
     }
     
     int retval = -1;
-    const char * ssh_dir = iron_get_user_ssh_dir(iron_user_login());
-    char * seckey_dir = iron_check_seckey_dir(ssh_dir);
+    char * seckey_dir = iron_check_seckey_dir();
     if (seckey_dir != NULL) {
         FILE * infile = open_curve25519_seckey_file(seckey_dir, "r", pub_keys->key, sizeof(pub_keys->key));
         if (infile != NULL) {

@@ -21,13 +21,25 @@
 #define IRON_ERR_NOT_FOR_USER	-102	//  File was encrypted, but not to the user retrieving it
 #define IRON_ERR_NO_OVERWRITE	-103	//  File exists, and user doesn't want to overwrite
 
-extern int	check_iron_keys(void);
+#define IRON_PUBKEY_FNAME		".ironpubkey"	//  Name of the file in user's home dir that holds public key info
+#define IRON_PUBKEY_LOCAL_FNAME "ironpubkey"	//  Name of the file when it is created in ~/.ssh
+#define IRON_PUBKEY_SUBDIR		"pubkeys/"		//  Name of the subdir of ~/.ssh that holds other users' public keys
+
+extern const char * iron_user_login(void);
+extern const char * iron_user_ssh_dir(void);
+extern const char * iron_get_pubkey_file_name(const char * login);
+
+extern int	iron_check_keys(void);
+extern int	iron_generate_keys(void);
+
+
 extern int	write_gpg_encrypted_file(const char * fname, char * enc_fname);
 extern int	write_gpg_decrypted_file(const char * fname, char * dec_fname);
 
 extern void	iron_reset_recipients();
 extern int	iron_add_recipient(const char * login);
 extern int	iron_remove_recipient(const char * login);
+
 extern int	iron_extension_offset(const char * name);
 
 

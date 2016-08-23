@@ -186,57 +186,6 @@ iron_put_num_sexpr(struct sshbuf * buf, const u_char * bstr, int bstr_len)
 }
 
 /**
- *  Given a login, generate path of ~<login>/.ssh/.
- *
- *  Find the home directory for the specified login and append '/.ssh/ to it.
- *
- *  @param login User for whom to generate path
- *  @param ssh_dir Place to write path (at least PATH_MAX chars)
- */
-static void
-populate_ssh_dir(const char * const login, char * ssh_dir)
-{
-    struct passwd * pw = getpwnam(login);
-    if (pw != NULL) {
-        snprintf(ssh_dir, PATH_MAX, "%s/.ssh/", pw->pw_dir);
-    } else {
-        *ssh_dir = '\0';
-    }
-}
-
-/**
- *  Generate the path to the .ssh directory for the specified login.
- *
- *  Cache the sshdir if the login is the current user. Return cached dir if login user_login.
- *  If path can't be determined, returns an empty string.
- *
- *  Nope, this is not even close to thread safe. Not a problem for now.
- *
- *  @param login Login of user for whom to get path to .ssh dir.
- *  @return char * Path, or empty string if unable to determine
- */
-const char *
-iron_get_user_ssh_dir(const char * const login)
-{
-    /* If the requested login is the current user's login, cache the ssh directory value, since we will
-     * probably need it a few times.
-     */
-    static char curr_ssh_dir[PATH_MAX] = { 0 };
-
-    if (strcmp(login, iron_user_login()) == 0) {
-        if (!(*curr_ssh_dir)) {
-            populate_ssh_dir(login, curr_ssh_dir);
-        }
-        return curr_ssh_dir;
-    }
-    else {
-        static char ssh_dir[PATH_MAX];
-        populate_ssh_dir(login, ssh_dir);
-        return ssh_dir;
-    }
-}
-
-/**
  *  Swap order of bytes in one byte array into a second array.
  *
  *  @param src Input byte array

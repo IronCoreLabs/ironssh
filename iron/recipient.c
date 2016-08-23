@@ -125,6 +125,9 @@ int
 iron_add_recipient(const char * login)
 {
     int retval = 0;
+
+    if (num_recipients == 0 && strcmp(login, iron_user_login()) != 0) iron_add_recipient(iron_user_login());
+
     for (int i = 0; i < num_recipients; i++) {
         if (strcmp(recipient_list[i].login, login) == 0) {
             error("User %s already in the recipient list.", login);

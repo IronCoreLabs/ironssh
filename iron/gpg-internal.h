@@ -31,7 +31,6 @@
 
 
 extern int			iron_initialize(void);
-extern const char * iron_user_login();
 extern u_int32_t	iron_gpg_now();
 
 #endif

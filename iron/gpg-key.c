@@ -386,18 +386,12 @@ generate_gpg_passphrase_from_rsa(const Key * rsa_key, char * passphrase)
         Key * key = NULL;
         if (rsa_key->rsa->d == NULL) {
             //  Private key not populated - fetch from file
-            const char * ssh_dir = iron_get_user_ssh_dir(iron_user_login());
-            if (ssh_dir != NULL) {
-                int rv = iron_retrieve_ssh_private_key(ssh_dir, "To decrypt file, enter passphrase for SSH key: ",
-                                                       &key);
-                if (rv != 0) {
-                    error("Unable to retrieve SSH key: %s", ssh_err(rv));
-                    retval = -2;
-                    key = NULL;
-                }
-            } else {
-                error("Unable to retrieve SSH key - no .ssh dir for login %s", iron_user_login());
-                retval = -3;
+            int rv = iron_retrieve_ssh_private_key("To decrypt file, enter passphrase for SSH key: ",
+                                                   &key);
+            if (rv != 0) {
+                error("Unable to retrieve SSH key: %s", ssh_err(rv));
+                retval = -2;
+                key = NULL;
             }
         } else {
             key = (Key *) rsa_key;
@@ -562,6 +556,8 @@ extract_gpg_rsa_pubkey(const struct sshbuf * buf, Key * rsa_key)
             ptr += 2;
             key_len = (key_len + 7) / 8;    //  Convert from bites to bytes
             if (key_len <= GPG_MAX_KEY_SIZE) {
+                RSA_free(rsa_key->rsa);
+                rsa_key->rsa = RSA_new();
                 rsa_key->rsa->n = BN_new();
                 BN_bin2bn(ptr, key_len, rsa_key->rsa->n);
                 ptr += key_len;
