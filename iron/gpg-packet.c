@@ -534,7 +534,7 @@ compute_signature_hash(const gpg_packet * pubkey_pkt, const gpg_packet * uid_pkt
     SHA256_CTX  ctx;
     SHA256_Init(&ctx);
 
-    u_char buf[6];
+    u_char buf[7];
 
     /* The hash is computed over the entire public key packet, the entire UID packet (except the stupid length is
      * expanded to four bytes), and the first part of the signature packet. It ends up with a trailer that is the
@@ -546,11 +546,11 @@ compute_signature_hash(const gpg_packet * pubkey_pkt, const gpg_packet * uid_pkt
     SHA256_Update(&ctx, buf, len);
     SHA256_Update(&ctx, sshbuf_ptr(pubkey_pkt->data), sshbuf_len(pubkey_pkt->data));
 
-    /* Next, do the same with the UID packet, if there is one. Need to fiddle with the tag/length, because when
+    /* Next, do the same with the UID packet, if there is one. Need to fiddle with the length, because when
      * GPG hashes it, it expands the length out to four bytes instead of one. Grr.
      */
     if (uid_pkt != NULL) {
-        buf[0] = 0xb4;   //  uid_pkt->tag converted to a tag byte
+        generate_gpg_tag_and_size(uid_pkt->tag, 1, buf);
         iron_int_to_buf(uid_pkt->len, buf + 1);
         SHA256_Update(&ctx, buf, 5);
         SHA256_Update(&ctx, sshbuf_ptr(uid_pkt->data), sshbuf_len(uid_pkt->data));
