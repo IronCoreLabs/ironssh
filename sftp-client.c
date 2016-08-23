@@ -2099,7 +2099,7 @@ retrieve_user_pubkeys(struct sftp_conn * conn, const char * login)
 	for (i = 0, rootp = home_dir_roots; i < num_home_dir_roots; i++, rootp++) {
 		char remote_fname[PATH_MAX];
 		snprintf(remote_fname, PATH_MAX, "%s/%s/%s", *rootp, login, IRON_PUBKEY_FNAME);
-		const char * local_fname = iron_get_pubkey_file_name(login);
+		const char * local_fname = iron_pubkey_file(login);
 		retval = do_download(conn, remote_fname, local_fname, NULL, 0, 0, 0, 0);
 		if (retval == 0) break;
 	}

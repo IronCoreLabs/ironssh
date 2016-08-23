@@ -2583,6 +2583,7 @@ main(int argc, char **argv)
 	}
 
 #ifdef IRONCORE
+	iron_set_host(host);
 	/*  Save off the home directory on the remote machine, in case we need it to find other users' pubkeys.  */
 	char * remote_path = do_realpath(conn, ".");
 	if (remote_path == NULL)
@@ -2612,10 +2613,9 @@ main(int argc, char **argv)
 		if (iron_generate_keys() < 0) fatal("Unable to start.");
 	}
    
-	//  Local keys available - upload the ~/.ssh/ironpubkey file to the server. We do this unconditionally
+	//  Local keys available - upload the user's pubkey file to the server. We do this unconditionally
 	//  because it's as efficient as checking whether the remote file is there or not.
-	char fname[PATH_MAX];
-	snprintf(fname, PATH_MAX, "%s%s", iron_user_ssh_dir(), IRON_PUBKEY_LOCAL_FNAME);
+	const char * fname = iron_user_pubkey_file();
 	if (do_upload(conn, fname, IRON_PUBKEY_FNAME, 1 /*preserve times*/, 0 /*no resume*/,
 		   			   0 /*no sync*/, 0 /*no encrypt*/) != 0) {
 		fatal("Unable to upload %s to %s on the server.", fname, IRON_PUBKEY_FNAME);

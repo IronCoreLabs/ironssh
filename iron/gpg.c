@@ -44,6 +44,10 @@ static char   * user_login;     //  Stores the login of the user running the pro
 
 static char   * user_ssh_dir;   //  The ~/.ssh directory for user_login.
 
+static char   * user_ironcore_dir;  //  The ~/.ssh/ironcore directory for user_login.
+
+static char   * hostname = "";  //  Name of the host to which ironsftp connected
+
 static int      inited = 0;     //  Indicates that the process has initialized everything needed for IronSFTP
 
 /**
@@ -69,15 +73,28 @@ iron_initialize(void)
             fatal("Unable to determine current user's login\n");
         } else {
             user_login = xstrdup(user_pw->pw_name);
-            char ssh_dir[PATH_MAX];
-            sprintf(ssh_dir, "%s/.ssh/", user_pw->pw_dir);
-            user_ssh_dir = xstrdup(ssh_dir);
+            char path[PATH_MAX];
+            sprintf(path, "%s/.ssh/", user_pw->pw_dir);
+            user_ssh_dir = xstrdup(path);
+            strlcat(path, IRONCORE_SUBDIR, PATH_MAX);
+            user_ironcore_dir = xstrdup(path);
         }
         inited = 1;
     }
 
     gpg_now = (u_int32_t) time(NULL);
     return retval;
+}
+
+void
+iron_set_host(const char * remote_host){
+    if (remote_host && *remote_host) hostname = xstrdup(remote_host);
+}
+
+const char *
+iron_host(void)
+{
+    return hostname;
 }
 
 const char *
@@ -92,6 +109,13 @@ iron_user_ssh_dir(void)
 {
     if (!inited) iron_initialize();
     return user_ssh_dir;
+}
+
+const char *
+iron_user_ironcore_dir(void)
+{
+    if (!inited) iron_initialize();
+    return user_ironcore_dir;
 }
 
 u_int32_t

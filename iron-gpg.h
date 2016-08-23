@@ -22,13 +22,16 @@
 #define IRON_ERR_NO_OVERWRITE	-103	//  File exists, and user doesn't want to overwrite
 
 #define IRON_PUBKEY_FNAME		".ironpubkey"	//  Name of the file in user's home dir that holds public key info
-#define IRON_PUBKEY_LOCAL_FNAME "ironpubkey"	//  Name of the file when it is created in ~/.ssh
-#define IRON_PUBKEY_SUBDIR		"pubkeys/"		//  Name of the subdir of ~/.ssh that holds other users' public keys
 
+
+extern const char * iron_host(void);
 extern const char * iron_user_login(void);
 extern const char * iron_user_ssh_dir(void);
-extern const char * iron_get_pubkey_file_name(const char * login);
+extern const char * iron_user_ironcore_dir(void);
+extern const char * iron_user_pubkey_file(void);
+extern const char * iron_pubkey_file(const char * login);
 
+extern void iron_set_host(const char * hostname);
 extern int	iron_check_keys(void);
 extern int	iron_generate_keys(void);
 
