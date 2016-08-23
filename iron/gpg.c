@@ -22,24 +22,6 @@
 #include <pwd.h>
 #include <string.h>
 #include <unistd.h>
-/*
-#include <stdio.h>
-#include <stdlib.h>
-#include <libgen.h>
-#include "sftp-common.h"
-#include "openbsd-compat/openbsd-compat.h"
-#include "key.h"
-#include "ssherr.h"
-#include "cipher.h"
-#include "digest.h"
-#include "misc.h"
-#include "sodium.h"
-#include "openssl/opensslconf.h"
-#include "openssl/evp.h"
-#include "openssl/engine.h"
-#include "openssl/sha.h"
-#include "openssl/ripemd.h"
-*/
 #include "log.h"
 #include "sshbuf.h"
 #include "xmalloc.h"
@@ -152,32 +134,33 @@ open_encrypted_output_file(const char * fname, char * enc_fname)
  *
  *  @param infile File to read for input
  *  @param outfile File to which to write encrypted data
- *  @param sha_ctx SHA1 hash to update with input file data
+ *  @param mdc_ctx SHA1 hash to update with input file data
+ *  @param sig_ctx SHA256 hash to update with input file data
  *  @param aes_ctx AES cipher to use to encrypt input file data
  *  @return int Num bytes read from input file
  */
 static int
-encrypt_input_file(FILE * infile, FILE * outfile, SHA_CTX * sha_ctx, EVP_CIPHER_CTX * aes_ctx)
+encrypt_input_file(FILE * infile, FILE * outfile, SHA_CTX * mdc_ctx, SHA256_CTX * sig_ctx, EVP_CIPHER_CTX * aes_ctx)
 {
-#define CHUNK_SIZE 8 * 1024
-    u_char * output = malloc(CHUNK_SIZE + 2 * AES_BLOCK_SIZE);
-    u_char * input = malloc(CHUNK_SIZE);
-    int             num_written;
+#define DECRYPT_CHUNK_SIZE 8 * 1024
+    u_char * enc_buf = malloc(DECRYPT_CHUNK_SIZE + 2 * AES_BLOCK_SIZE);
+    u_char * input = malloc(DECRYPT_CHUNK_SIZE);
+    int      num_written;
 
     //  Now just read blocks of the input file, hash them, encrypt them, and output the encrypted data.
     int total_read = 0;
-    int num_read = fread(input, 1, CHUNK_SIZE, infile);
+    int num_read = fread(input, 1, DECRYPT_CHUNK_SIZE, infile);
     while (num_read > 0) {
         total_read += num_read;
-        num_written = hashcrypt(sha_ctx, aes_ctx, input, num_read, output);
-        if (num_written < 0 || (int) fwrite(output, 1, num_written, outfile) != num_written) {
+        num_written = iron_hashcrypt(mdc_ctx, sig_ctx, aes_ctx, input, num_read, enc_buf);
+        if (num_written < 0 || (int) fwrite(enc_buf, 1, num_written, outfile) != num_written) {
             total_read = -1;
             break;
         }
-        num_read = fread(input, 1, CHUNK_SIZE, infile);
+        num_read = fread(input, 1, DECRYPT_CHUNK_SIZE, infile);
     }
 
-    free(output);
+    free(enc_buf);
     free(input);
     return total_read;
 }
@@ -199,18 +182,23 @@ encrypt_input_file(FILE * infile, FILE * outfile, SHA_CTX * sha_ctx, EVP_CIPHER_
  *
  *  @param infile File from which to read data
  *  @param fname Path of input file
- *  @param outfile File to which to write encrypted data
  *  @param sym_key Randomly generated symmetric key to used to encrypt data. Should be AES256_KEY_BYTES
+ *  @param rsa_key Key to use to sign message. Secret parms will be populated if they are not already
  *  @return int 0 if successful, negative number if error
+ *  @param outfile File to which to write encrypted data
  */
 static int
-write_encrypted_data_file(FILE * infile, const char * fname, FILE * outfile, u_char * sym_key)
+write_encrypted_data_file(FILE * infile, const char * fname, const u_char * sym_key, Key * rsa_key,
+                          const u_char * rsa_key_id, FILE * outfile)
 {
     int retval = -1;
 
-    //  Set up the SHA1 hash that will accumulate the literal data and generate the MDC packet at the end.
-    SHA_CTX sha_ctx;
-    SHA1_Init(&sha_ctx);
+    //  Set up the SHA1 hash that will accumulate the literal data and generate the MDC packet at the end,
+    //  and the SHA256 hash we use for the signature packet
+    SHA_CTX mdc_ctx;
+    SHA1_Init(&mdc_ctx);
+    SHA256_CTX sig_ctx;
+    SHA256_Init(&sig_ctx);
 
     //  Set up the AES256 cipher to encrypt the literal data
     EVP_CIPHER_CTX aes_ctx;
@@ -218,18 +206,36 @@ write_encrypted_data_file(FILE * infile, const char * fname, FILE * outfile, u_c
     EVP_CIPHER_CTX_init(&aes_ctx);
     if (EVP_EncryptInit_ex(&aes_ctx, aes_cipher, NULL /* dflt engine */, sym_key, NULL /* dflt iv */)) {
         //  First output the start of the Symmetrically Encrypted Integrity Protected Data Packet.
-        //  This requires that we know how long the data packet will be, so retrieve the file size,
-        //  then write the SEIPD packet header using that length.
+        //  This requires that we know how long the data packet will be, so retrieve the file size.
         struct stat statstr;
         fstat(fileno(infile), &statstr);
+
+        //  The SEIPD packet will wrap a one-pass signature packet, a literal data packet, and a signature
+        //  packet. Need to figure out how long they are going to be as well. Go ahead and generate the OPS
+        //  packet and header so we know their length, then generate the literal data packet header.
+        gpg_packet ops_pkt;
+        generate_gpg_one_pass_signature_packet(rsa_key_id, &ops_pkt);
+        u_char ops_hdr[7];
+        int ops_hdr_len = generate_gpg_tag_and_size(ops_pkt.tag, ops_pkt.len, ops_hdr);
 
         u_char data_pkt_hdr[128];
         int data_pkt_hdr_len = generate_gpg_literal_data_packet(fname, statstr.st_size, statstr.st_mtime,
                 data_pkt_hdr);
 
-        //  Add size of random data prefix and MDC packet and version # prefix
-        int data_len = data_pkt_hdr_len + statstr.st_size +
-            AES_BLOCK_SIZE + 2 /*prefix*/ + 22 /*MDC*/ + 1 /*version*/;
+        //  Now generate the signature packet - we can get everything except the actual signature data. The
+        //  length generated for the packet includes the signature that will be populated later.
+        gpg_packet sig_pkt;
+        generate_gpg_data_signature_packet(rsa_key, rsa_key_id, &sig_pkt);
+        u_char sig_hdr[7];
+        int sig_hdr_len = generate_gpg_tag_and_size(sig_pkt.tag, sig_pkt.len, sig_hdr);
+
+        //  Add everything together to get the length of the encrypted data that will go into SEIPD packet:
+        //  random data prefix, OPS, literal data, signature, and MDC packets
+        int data_len = AES_BLOCK_SIZE + 2 /* random data prefix */ + 
+                       ops_hdr_len + ops_pkt.len /* OPS packet */+
+                       data_pkt_hdr_len + statstr.st_size /* literal data packet */ +
+                       sig_pkt.len + sig_hdr_len + /* signature packet */
+                       GPG_MDC_PKT_LEN;
 
         //  Start emitting the SEIP packet.
         gpg_packet seipd_pkt;
@@ -245,19 +251,33 @@ write_encrypted_data_file(FILE * infile, const char * fname, FILE * outfile, u_c
             input[AES_BLOCK_SIZE] = input[AES_BLOCK_SIZE - 2];
             input[AES_BLOCK_SIZE + 1] = input[AES_BLOCK_SIZE - 1];
 
-            u_char * outp = output + hashcrypt(&sha_ctx, &aes_ctx, input, AES_BLOCK_SIZE + 2, output);
+            u_char * outp = output + iron_hashcrypt(&mdc_ctx, NULL, &aes_ctx, input, AES_BLOCK_SIZE + 2, output);
+
+            //  Add the one pass signature packet.
+            outp += iron_hashcrypt(&mdc_ctx, NULL, &aes_ctx, ops_hdr, ops_hdr_len, outp);
+            outp += iron_hashcrypt(&mdc_ctx, NULL, &aes_ctx, sshbuf_ptr(ops_pkt.data), ops_pkt.len, outp);
 
             //  Add the header for the Literal Data Packet
-            outp += hashcrypt(&sha_ctx, &aes_ctx, data_pkt_hdr, data_pkt_hdr_len, outp);
+            outp += iron_hashcrypt(&mdc_ctx, NULL, &aes_ctx, data_pkt_hdr, data_pkt_hdr_len, outp);
             fwrite(output, 1, outp - output, outfile);
 
-            int total_read = encrypt_input_file(infile, outfile, &sha_ctx, &aes_ctx);
+            //  Now we start accumulating the hash for the signature packet as well, while we read and
+            //  encrypt the file data.
+            int total_read = encrypt_input_file(infile, outfile, &mdc_ctx, &sig_ctx, &aes_ctx);
             if (total_read >= 0) {
                 if ((off_t) total_read == statstr.st_size) {
-                    retval = write_gpg_mdc_packet(outfile, &sha_ctx, &aes_ctx);
+                    //  Finish off the signature hash, then sign it and write the signature packet.
+                    if (finalize_gpg_data_signature_packet(&sig_ctx, rsa_key, &sig_pkt) == 0) {
+                        outp = output;
+                        outp += iron_hashcrypt(&mdc_ctx, NULL, &aes_ctx, sig_hdr, sig_hdr_len, outp);
+                        outp += iron_hashcrypt(&mdc_ctx, NULL, &aes_ctx, sshbuf_ptr(sig_pkt.data), sig_pkt.len, outp);
+                        fwrite(output, 1, outp - output, outfile);
+                        retval = write_gpg_mdc_packet(outfile, &mdc_ctx, &aes_ctx);
+                    } else {
+                        error("Unable to retrieve secret RSA key to sign message.");
+                    }
                 } else {
                     error("Did not read the complete input file.");
-                    retval = -1;
                 }
             }
         }
@@ -295,7 +315,7 @@ write_gpg_encrypted_file(const char * fname, char * enc_fname)
                 retval = 0;
                 // Need to generate a "Public Key Encrypted Session Key Packet" for each of the recipients.
                 const gpg_public_key * recipient_key;
-                int recip_ct = get_recipients(&recipient_key);
+                int recip_ct = iron_get_recipients(&recipient_key);
                 for (int i = 0; retval == 0 && i < recip_ct; i++) {
                     gpg_packet pkesk;
                     generate_gpg_pkesk_packet(recipient_key + i, sym_key_frame, sizeof(sym_key_frame), &pkesk);
@@ -305,7 +325,12 @@ write_gpg_encrypted_file(const char * fname, char * enc_fname)
                 }
 
                 if (retval == 0) {
-                    retval = write_encrypted_data_file(infile, fname, outfile, sym_key_frame + 1);
+                    //  The first recipient is always the current user - use that entry's key and key ID.
+                    //  We cheat and cast the const out of the recipient key pointer - we only ever write to
+                    //  the current user's key.
+                    retval = write_encrypted_data_file(infile, fname, sym_key_frame + 1,
+                                                       (Key *) &(recipient_key[0].rsa_key),
+                                                       GPG_KEY_ID_FROM_FP(recipient_key[0].signer_fp), outfile);
                     if (retval == 0) {
                         retval = fileno(outfile);
                     }
@@ -367,19 +392,20 @@ open_decrypted_output_file(const char * fname, char * dec_fname)
  *  Read the start of the packet from the file, get the SHA1 hash going, start decrypting, extract
  *  file name.
  *
- *  @param sha_ctx SHA1 hash of decrypted data
+ *  @param mdc_ctx SHA1 hash of decrypted data
  *  @param aes_ctx AES cipher to decrypt data
  *  @param infile File from which to read encrypted data
- *  @param output Place to store decrypted data (at least 528 bytes)
+ *  @param dec_buf Place to store decrypted data (at least 528 bytes)
+ *  @param rsa_key_id Place to store key ID extracted from OPS packet
  *  @param fname Place to store name of the file that was encrypted (at least PATH_MAX bytes)
  *  @param num_dec Place to store number of bytes decrypted
  *  @param len Place to store remaining size of encrypted data to process
  *  @param extra Place to store number of bytes of trailing MDC packet that have already been read
- *  @return int Num bytes written to output array, negative number if error
+ *  @return int Num bytes written to dec_buf array, negative number if error
  */
 static int
-process_enc_data_hdr(SHA_CTX * sha_ctx, EVP_CIPHER_CTX * aes_ctx, FILE * infile,
-                     u_char * output, char * fname, int * num_dec, ssize_t * len, int * extra)
+process_enc_data_hdr(SHA_CTX * mdc_ctx, EVP_CIPHER_CTX * aes_ctx, FILE * infile, u_char * dec_buf,
+                     u_char * rsa_key_id, char * fname, int * num_dec, ssize_t * len, int * extra)
 {
 //  After the header for the SEIPD packet and the one byte version number, there should be encrypted
 //  data. The start of this data has 16 bytes of random data, the last two bytes of that data repeated,
@@ -388,61 +414,71 @@ process_enc_data_hdr(SHA_CTX * sha_ctx, EVP_CIPHER_CTX * aes_ctx, FILE * infile,
 #define MIN_ENC_DATA_HDR_SIZE   27
 
     //  More than enough space to get through all the header stuff and into the encrypted file data.
-    u_char input[512];
+    u_char input[DECRYPT_CHUNK_SIZE];
     size_t num_read = fread(input, 1, sizeof(input), infile);
     if (num_read < MIN_ENC_DATA_HDR_SIZE) {
         error("Input too short - cannot recover data.");
         return -1;
     }
 
-    EVP_DecryptUpdate(aes_ctx, output, num_dec, input, num_read);
+    EVP_DecryptUpdate(aes_ctx, dec_buf, num_dec, input, num_read);
     if (*num_dec <= AES_BLOCK_SIZE + 2) {
         error("Decrypted input too short - cannot recover data.");
         return -2;
     }
 
     //  The first 16 bytes are random data, then the last two bytes of those 16 should be repeated.
-    if (output[AES_BLOCK_SIZE] != output[AES_BLOCK_SIZE - 2] ||
-            output[AES_BLOCK_SIZE + 1] != output[AES_BLOCK_SIZE - 1]) {
+    if (dec_buf[AES_BLOCK_SIZE] != dec_buf[AES_BLOCK_SIZE - 2] ||
+            dec_buf[AES_BLOCK_SIZE + 1] != dec_buf[AES_BLOCK_SIZE - 1]) {
         error("Checksum error in header - cannot recover data.");
         return -3;
     }
-    u_char * optr = output + AES_BLOCK_SIZE + 2;
+    u_char * dptr = dec_buf + AES_BLOCK_SIZE + 2;
 
     gpg_tag tag = GPG_TAG_DO_NOT_USE;
     *len = 0;
-    int     tag_size_len = extract_gpg_tag_and_size(optr, &tag, len);
-    optr += tag_size_len;
-    if (tag != GPG_TAG_LITERAL_DATA || *(optr++) != 'b') {  //  We always write literal data in "binary" format)
+
+    //  First up, we expect a One Pass Signature (OPS) packet.
+    int tag_size_len = extract_gpg_tag_and_size(dptr, &tag, len);
+    dptr += tag_size_len;
+    int ops_len = extract_gpg_one_pass_signature_packet(dptr, *num_dec - (dptr - dec_buf), rsa_key_id);
+    if (tag != GPG_TAG_ONE_PASS_SIGNATURE || ops_len < 0 || ops_len != *len) {
+        error("Input file missing valid one pass signature.");
+        return -4;
+    }
+    dptr += ops_len;
+
+    tag_size_len = extract_gpg_tag_and_size(dptr, &tag, len);
+    dptr += tag_size_len;
+    if (tag != GPG_TAG_LITERAL_DATA || *(dptr++) != 'b') {  //  We always write literal data in "binary" format)
         error("Unexpected data at start of packet - cannot recover data.");
         return -4;
     }
-    int fname_len = *(optr++);
-    memcpy(fname, optr, fname_len);
+    int fname_len = *(dptr++);
+    memcpy(fname, dptr, fname_len);
     fname[fname_len] = '\0';
-    optr += fname_len;
+    dptr += fname_len;
 
-    time_t file_ts = 0;
-    for (int i = 0; i < 4; i++, optr++) {
-        file_ts = (file_ts << 8) + *optr;
-    }
+    u_int32_t file_ts = iron_buf_to_int(dptr);
+    dptr += 4;
 
     *len -= fname_len + 1 /*format spec*/ + 1 /* fname len byte*/ + 4 /*timestamp*/;
 
-    //  The rest of the encrypted data is the encrypted file data, followed by the
-    //  MDC packet. Figure out how much of the current decrypted buffer is file data -
-    //  part of it might be MDC packet.
-    *num_dec -= (optr - output);
-    SHA1_Update(sha_ctx, output, optr - output);
+    //  The rest of the encrypted data is the encrypted file data, followed by the signature and MDC packets.
+    //  Figure out how much of the current decrypted buffer is file data - part of it might be MDC packet.
+    //  *len contains the number of bytes left in the literal data packet
+    //  *num_dec contains the number of bytes left in the decryption output buffer
+    *num_dec -= (dptr - dec_buf);
+    SHA1_Update(mdc_ctx, dec_buf, dptr - dec_buf);
 
-    if (*len < *num_dec) {  // At least part of MDC packet in buffer
+    if (*len < *num_dec) {  // At least part of Sig/MDC packets in buffer
         *extra = *num_dec - *len;
         *num_dec = *len;
     } else {
         *extra = 0;
     }
 
-    return optr - output;
+    return dptr - dec_buf;
 }
 
 /**
@@ -451,26 +487,31 @@ process_enc_data_hdr(SHA_CTX * sha_ctx, EVP_CIPHER_CTX * aes_ctx, FILE * infile,
  *  Read chunks from the file, decrypt them, and write the decrypted data to the output file until
  *  we have exhausted the literal data packet.
  *
- *  @param sha_ctx SHA1 hash of decrypted data
+ *  *** NOTE: until we have a way to retrieve the RSA key for a key ID, we can't verify the signature
+ *  packet. But we do accumulate the hash as we go, in preparation.
+ *
+ *  @param mdc_ctx SHA1 hash of decrypted data
+ *  @param sig_ctx SHA256 hash of decrypted data
  *  @param aes_ctx AES cipher to decrypt data
+ *  @param rsa_key_id ID of the key that signed the data while encrypting
  *  @param infile File from which to read encrypted data
  *  @param outfile File to which to write decrypted data
- *  @param output Place to store decrypted data (at least CHUNK_SIZE + 2 * AES_BLOC_SIZE bytes)
+ *  @param dec_buf Place to store decrypted data (at least DECRYPT_CHUNK_SIZE + 2 * AES_BLOC_SIZE bytes)
  *  @param offset Offset into output buffer at which to start initially
  *  @param len Num bytes enc. data to process
  *  @param extra Num bytes of MDC packet already read
  *  @return int 0 if successful, negative number if error
  */
 static int
-process_enc_data(SHA_CTX * sha_ctx, EVP_CIPHER_CTX * aes_ctx, FILE * infile, FILE * outfile,
-                 u_char * output, int offset, ssize_t len, int extra)
+process_enc_data(SHA_CTX * mdc_ctx, SHA256_CTX * sig_ctx, EVP_CIPHER_CTX * aes_ctx, u_char * rsa_key_id,
+                 FILE * infile, FILE * outfile, u_char * dec_buf, int offset, ssize_t len, int extra)
 {
     int retval = 0;
 
-    u_char input[CHUNK_SIZE];
+    u_char input[DECRYPT_CHUNK_SIZE];
     int num_dec;
     int num_read;
-    u_char * optr = output + offset;
+    u_char * dptr = dec_buf + offset;
 
     while (len > 0) {
         num_read = fread(input, 1, sizeof(input), infile);
@@ -479,55 +520,66 @@ process_enc_data(SHA_CTX * sha_ctx, EVP_CIPHER_CTX * aes_ctx, FILE * infile, FIL
             retval = -1;
             break;
         }
-        EVP_DecryptUpdate(aes_ctx, output, &num_dec, input, num_read);
+        EVP_DecryptUpdate(aes_ctx, dec_buf, &num_dec, input, num_read);
 
-        optr = output;
+        dptr = dec_buf;
         if (len < num_dec) {  // At least part of MDC packet in buffer
             extra = num_dec - len;
-            optr += len;
+            dptr += len;
             num_dec = len;
         } else {
             extra = 0;
-            optr += num_dec;
+            dptr += num_dec;
         }
 
-        if (fwrite(output, 1, num_dec, outfile) != (size_t) num_dec) {
+        if (fwrite(dec_buf, 1, num_dec, outfile) != (size_t) num_dec) {
             error("Error writing output file");
             retval = -1;
             break;
         }
         len -= num_dec;
-        SHA1_Update(sha_ctx, output, num_dec);
+        SHA1_Update(mdc_ctx, dec_buf, num_dec);
+        SHA256_Update(sig_ctx, dec_buf, num_dec);
     }
 
-    //  When we get to here, we should have written the entire decrypted data file, and
-    //  optr should point to the start of the MDC packet, if there was part of it in the
-    //  last decrypted block. Read the rest of the MDC packet and validate the hash.
+    //  When we get to here, we should have written the entire decrypted data file, and dptr should
+    //  point to the start of the Signature packet, if there was part of it in the last decrypted block.
+    //  Read the rest of the Signature and MDC packets and validate them.
     if (retval == 0) {
         retval = -1;
 
         num_read = fread(input, 1, sizeof(input), infile);
         if (!ferror(infile)) {
             if (extra > 0) {
-                memmove(output, optr, extra);
-                optr = output + extra;
+                memmove(dec_buf, dptr, extra);
+                dptr = dec_buf + extra;
             }
-            EVP_DecryptUpdate(aes_ctx, optr, &num_dec, input, num_read);
+            EVP_DecryptUpdate(aes_ctx, dptr, &num_dec, input, num_read);
             int last_dec;
-            EVP_DecryptFinal_ex(aes_ctx, optr + num_dec, &last_dec);
-            num_dec += last_dec;
-            if (extra + num_dec == GPG_MDC_PKT_LEN) {
-                SHA1_Update(sha_ctx, output, 2);
-                u_char digest[SHA_DIGEST_LENGTH];
-                SHA1_Final(digest, sha_ctx);
+            EVP_DecryptFinal_ex(aes_ctx, dptr + num_dec, &last_dec);
+            num_dec += last_dec + extra;
 
-                if (memcmp(output + 2, digest, sizeof(digest)) == 0) {
-                    retval = 0;
+            //  dec_buf should contain the signature packet followed by the MDC packet now.
+            last_dec = process_data_signature_packet(dec_buf, num_dec, sig_ctx, rsa_key_id);
+            if (last_dec > 0) {
+                SHA1_Update(mdc_ctx, dec_buf, last_dec);
+                dptr = dec_buf + last_dec;
+
+                if ((num_dec - last_dec) == GPG_MDC_PKT_LEN) {
+                    SHA1_Update(mdc_ctx, dptr, 2);
+                    u_char digest[SHA_DIGEST_LENGTH];
+                    SHA1_Final(digest, mdc_ctx);
+
+                    if (memcmp(dptr + 2, digest, sizeof(digest)) == 0) {
+                        retval = 0;
+                    } else {
+                        error("Invalid Modification Detection Code - cannot recover data.");
+                    }
                 } else {
-                    error("Invalid Modification Detection Code - cannot recover data.");
+                    error("Length of input incorrect - cannot recover data.");
                 }
             } else {
-                error("Length of input incorrect - cannot recover data.");
+                error("Unable to validate signature (error %d) - cannot recover data.", last_dec);
             }
         } else {
             error("Error reading input file.");
@@ -552,8 +604,7 @@ process_enc_data(SHA_CTX * sha_ctx, EVP_CIPHER_CTX * aes_ctx, FILE * infile, FIL
  *  the MDC packet matches the running hash we have computed.
  *
  *  @param fname Name of the input file to read
- *  @param sec_key Pointer to secret key of recipient. Should be crypto_box_SECRETKEYBYTES long.
- *  @param pub_key Pointer to gpg_public_key struct containing public key of recipient and fingerprint.
+ *  @param dec_fname Place to write name of the output file that is created (at least PATH_MAX chars)
  *  @return 0 if successful, negative number if errors
  */
 int
@@ -573,9 +624,9 @@ write_gpg_decrypted_file(const char * fname, char * dec_fname)
     gpg_tag next_tag;
     int     next_len;
 
-    const gpg_public_key * pub_keys = get_recipient_keys(iron_user_login());
+    const gpg_public_key * pub_keys = iron_get_recipient_keys(user_login);
     if (pub_keys == NULL) {
-        error("Unable to retrieve public IronCore keys for user %s.", iron_user_login());
+        error("Unable to retrieve public IronCore keys for user %s.", user_login);
         fclose(infile);
         return -1;
     }
@@ -592,7 +643,7 @@ write_gpg_decrypted_file(const char * fname, char * dec_fname)
             }
             msg_ptr += ekey_offset;
 
-            //  If we are actually abole to retrieve what we think is a PKESK packet, chances are good that
+            //  If we are actually able to retrieve what we think is a PKESK packet, chances are good that
             //  this is really a file containing GPG encrypted data. Before we can get further, we need to
             //  retrieve the user's secret key.
             u_char sym_key[AES256_KEY_BYTES];
@@ -608,11 +659,13 @@ write_gpg_decrypted_file(const char * fname, char * dec_fname)
             //  Note that the encrypted data will always be long enough to output at least two blocks (32
             //  bytes) in the first call to DecryptUpdate - the header + MDC packet is more than 32 bytes,
             //  even if the file name is 1 character long and the file is empty.
-            u_char output[CHUNK_SIZE + 2 * AES_BLOCK_SIZE];
+            u_char dec_buf[DECRYPT_CHUNK_SIZE + 2 * AES_BLOCK_SIZE];
             u_char seipd_ver = fgetc(infile);
             if (next_tag == GPG_TAG_SEIP_DATA && seipd_ver == GPG_SEIPD_VERSION) {
-                SHA_CTX sha_ctx;
-                SHA1_Init(&sha_ctx);
+                SHA_CTX mdc_ctx;            //  One hash for the Modification Detection Code
+                SHA1_Init(&mdc_ctx);
+                SHA256_CTX sig_ctx;         //  One hash for the Signature packet
+                SHA256_Init(&sig_ctx);
 
                 EVP_CIPHER_CTX aes_ctx;
                 const EVP_CIPHER * aes_cipher = EVP_aes_256_cfb();
@@ -623,25 +676,30 @@ write_gpg_decrypted_file(const char * fname, char * dec_fname)
                     ssize_t len;
                     int extra;
                     char local_fname[PATH_MAX];
-                    int rv = process_enc_data_hdr(&sha_ctx, &aes_ctx, infile, output, local_fname, &num_dec,
-                                                  &len, &extra);
-                    if (rv < 0) {
+                    u_char rsa_key_id[GPG_KEY_ID_LEN];
+
+                    int dec_offset = process_enc_data_hdr(&mdc_ctx, &aes_ctx, infile, dec_buf, rsa_key_id,
+                                                          local_fname, &num_dec, &len, &extra);
+                    if (dec_offset < 0) {
                         fclose(infile);
                         return -5;
                     }
 
-                    u_char * optr = output + rv;
+                    u_char * dptr = dec_buf + dec_offset;
                     FILE * outfile = open_decrypted_output_file(fname, dec_fname);
                     if (outfile != NULL) {
-                        //  Flush remainder of output buffer that is file data. May still be some left that is
-                        //  all or part of the MDC packet.
-                        fwrite(optr, 1, num_dec, outfile);
-                        SHA1_Update(&sha_ctx, optr, num_dec);
+                        //  Flush remainder of decrypted buffer that is file data. May still be some left that is
+                        //  all or part of the Sig/MDC packets.
+                        fwrite(dptr, 1, num_dec, outfile);
+                        SHA1_Update(&mdc_ctx, dptr, num_dec);
+                        SHA256_Update(&sig_ctx, dptr, num_dec);
                         len -= num_dec;
-                        optr += num_dec;
+                        dptr += num_dec;
 
-                        retval = process_enc_data(&sha_ctx, &aes_ctx, infile, outfile, output, optr - output,
-                                len, extra);
+                        //  If there is any Sig/MDC data in dec_buf, len will be zero, extra will be the number
+                        //  of bytes of that data
+                        retval = process_enc_data(&mdc_ctx, &sig_ctx, &aes_ctx, rsa_key_id, infile, outfile,
+                                                  dec_buf, dptr - dec_buf, len, extra);
 
                         if (retval == 0) {
                             fflush(outfile);

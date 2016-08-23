@@ -60,29 +60,17 @@
  *  Requires computing the keygrip of the public key.
  *
  *  @param seckey_dir Path in which to look for file
- *  @param ssh_key RSA key (only need public portion)
- *  @return FILE * File containing RSA secret key, opened for write
+ *  @param mode Mode string to use for fopen (e.g. "r", "w+")
+ *  @param rsa_key RSA key (only need public portion)
+ *  @return FILE * File containing RSA secret key, opened in specified mode
  */
 static FILE *
-open_rsa_seckey_file(const char * seckey_dir, const Key * ssh_key)
+open_rsa_seckey_file(const char * seckey_dir, const char * mode, const Key * rsa_key)
 {
     u_char keygrip[SHA_DIGEST_LENGTH];
     char hexgrip [2 * SHA_DIGEST_LENGTH + 1];
 
-    u_char tmp_n[1025];
-    u_char * tmp_ptr;
-    tmp_n[0] = 0x00;
-    int n_len = BN_bn2bin(ssh_key->rsa->n, tmp_n + 1);
-    if (tmp_n[1] > 0x7f) {
-        n_len++;
-        tmp_ptr = tmp_n;
-    } else {
-        tmp_ptr = tmp_n + 1;
-    }
-
-    //  So much simpler than the curve25519 keygrip - an RSA keygrip is just a SHA1 hash of the public key
-    //  parameter n.
-    compute_sha1_hash_chars(tmp_ptr, n_len, keygrip);
+    generate_gpg_rsa_keygrip(rsa_key, keygrip);
     iron_hex2str(keygrip, sizeof(keygrip), hexgrip);
 
     char dir_name[512];
@@ -91,7 +79,7 @@ open_rsa_seckey_file(const char * seckey_dir, const Key * ssh_key)
     int len = snprintf(dir_name, sizeof(dir_name), "%s/%s.key", seckey_dir, hexgrip);
 
     if (len < (int) sizeof(dir_name)) {
-        infile = fopen(dir_name, "w");
+        infile = fopen(dir_name, mode);
     }
     return infile;
 }
@@ -195,13 +183,13 @@ copy_ssh_key_files(const char * ssh_dir)
  *  Retrieve the IronCore public key entries from the specified login's .pubkey file.
  *
  *  @param login User whose key info to retrieve
- *  @param rsa_key Output - public portion of RSA key from .pubkey. Should point to at least GPG_MAX_KEY_SIZE bytes
- *  @param rsa_key_len Output - num bytes in rsa_key
- *  @param cv25519_key Output - public portion of Curve25519 key - at least crypto_box_SECRETKEYBYTES bytes
- *  @param cv25519_key_len Output - num bytes in cv25519_key
- *  @param rsa_fp Output - fingerprint of RSA key. Point to at least GPG_KEY_FP_LEN bytes
- *  @param cv25519_fp Output - fingerprint of Curve25519 key. Point to at least GPG_KEY_FP_LEN bytes
- *  @param uid Output - the "user ID" string associated with the keys. Should point to at least COMMENT_MAX bytes
+ *  @param rsa_key Place to write public portion of RSA key from .pubkey (at least GPG_MAX_KEY_SIZE bytes)
+ *  @param rsa_key_len Place to write num bytes in rsa_key
+ *  @param cv25519_key Place to write public portion of Curve25519 key (at least crypto_box_SECRETKEYBYTES bytes)
+ *  @param cv25519_key_len Place to write num bytes in cv25519_key
+ *  @param rsa_fp Place to write fingerprint of RSA key (at least GPG_KEY_FP_LEN bytes)
+ *  @param cv25519_fp Place to write fingerprint of Curve25519 key (at least GPG_KEY_FP_LEN bytes)
+ *  @param uid Place to write "user ID" string associated with the keys (at least GPG_MAX_UID_LEN bytes)
  *  @return int 0 if successful, negative number if error
  */
 static int
@@ -649,8 +637,8 @@ get_gpg_public_keys(const char * login, Key * rsa_key, u_char * rsa_fp, u_char *
  *  @param ssh_dir Path to the user's .ssh directory (usually under ~<login>
  *  @return char * Path of private key subdir (at least PATH_MAX chars). Caller should free
  */
-static char *
-check_seckey_dir(const char * ssh_dir)
+char *
+iron_check_seckey_dir(const char * ssh_dir)
 {
     char dir_name[PATH_MAX];
     char * name_ptr = NULL;
@@ -695,7 +683,7 @@ write_public_key_file(FILE * pub_file, const Key * ssh_key, const u_char * pub_s
 
     generate_gpg_user_id_packet(uid, &user_id_pkt);
     generate_gpg_pk_uid_signature_packet(&public_key_pkt, &user_id_pkt, ssh_key, GPG_SIGCLASS_POSITIVE_CERT,
-            key_id, &sig_pkt);
+                                         key_id, &sig_pkt);
     generate_gpg_trust_packet(&trust_pkt);
 
     retval = put_gpg_packet(pub_file, &public_key_pkt);
@@ -758,10 +746,10 @@ write_secret_key_files(const char * ssh_dir, const Key * ssh_key, const u_char *
                        const u_char * d, int d_len, const char * passphrase)
 {
     int retval = -1;
-    char * seckey_dir = check_seckey_dir(ssh_dir);
+    char * seckey_dir = iron_check_seckey_dir(ssh_dir);
 
     if (seckey_dir) {
-        FILE * rsa_key_file = open_rsa_seckey_file(seckey_dir, ssh_key);
+        FILE * rsa_key_file = open_rsa_seckey_file(seckey_dir, "w", ssh_key);
 
         if (rsa_key_file != NULL) {
             fchmod(fileno(rsa_key_file), S_IRUSR | S_IWUSR);    //  600 perms.
@@ -915,7 +903,7 @@ check_iron_keys(void)
         snprintf(file_name, PATH_MAX, "%s%s", ssh_dir, GPG_PUBLIC_KEY_FNAME);
 
         if (access(file_name, F_OK) == 0) {
-            char * seckey_dir = check_seckey_dir(ssh_dir);
+            char * seckey_dir = iron_check_seckey_dir(ssh_dir);
             if (seckey_dir != NULL) {
                 //  If the directory is there, assume that the key files are in place.
                 retval = 0;
@@ -943,14 +931,52 @@ check_iron_keys(void)
 }
 
 /**
+ *  Retrieve secret part of RSA signing key pair.
+ *
+ *  Retrieve the secret RSA signing key for the login that is running the process. Given the public
+ *  keys for that user, makes sure the secret key is not already fetched. (The rsa_key parm is a pointer
+ *  to the key stored in the recipient list, which is cached during process run). If the secret key is not,
+ *  available, uses the public encryption key to compute the keygrip, open the secret key file, then
+ *  retrieve the secret key from that file. This requires the passphrase, which requires the RSA public key as well
+ *  (to generate the passphrase).
+ *
+ *  @param rsa_key RSA key. If successful, private part of RSA key is populated
+ *  @return int 0 if successful, negative number if error
+ */
+int
+get_gpg_secret_signing_key(Key * rsa_key)
+{
+    if (rsa_key->rsa->d != NULL) return 0;      //  Already fetched
+
+	int retval = -1;
+	const char * ssh_dir = iron_get_user_ssh_dir(iron_user_login());
+	char * seckey_dir = iron_check_seckey_dir(ssh_dir);
+	if (seckey_dir != NULL) {
+		FILE * infile = open_rsa_seckey_file(seckey_dir, "r", rsa_key);
+		if (infile != NULL) {
+			u_char buf[4096];		//  Just picked a big number to hold entire file
+
+			int num_read = fread(buf, 1, sizeof(buf), infile);
+			retval = extract_gpg_rsa_seckey(buf, num_read, rsa_key);
+			fclose(infile);
+		}
+
+		free(seckey_dir);
+	}
+
+	return retval;
+}
+
+/**
  *  Retrieve secret part of cv25519 encryption key pair.
  *
- *  Retrieve the secret curve25519 encryption key for the login that is running the process. Retrieves the public
+ *  Retrieve the secret curve25519 encryption key for the login that is running the process. Given the public
  *  keys for that user, uses the public encryption key to compute the keygrip, open the secret key file, then
  *  retrieve the secret key from that file. This requires the passphrase, which requires the RSA public key as well
  *  (it is used to generate the passphrase).
  *
- *  @param sec_key Output - secret part of curve25519 key. Should point to crypto_box_SECRETKEYBYTES bytes
+ *  @param pub_keys public rsa and cv25519 keys - uses cv25519 key to generate keygrip, rsa key for passphrase
+ *  @param sec_key Place to put secret part of curve25519 key (at least crypto_box_SECRETKEYBYTES bytes)
  *  @return int num bytes in sec_key if successful, negative number if error
  */
 int
@@ -966,7 +992,7 @@ get_gpg_secret_encryption_key(const gpg_public_key * pub_keys, u_char * sec_key)
     
     int retval = -1;
     const char * ssh_dir = iron_get_user_ssh_dir(iron_user_login());
-    char * seckey_dir = check_seckey_dir(ssh_dir);
+    char * seckey_dir = iron_check_seckey_dir(ssh_dir);
     if (seckey_dir != NULL) {
         FILE * infile = open_curve25519_seckey_file(seckey_dir, "r", pub_keys->key, sizeof(pub_keys->key));
         if (infile != NULL) {

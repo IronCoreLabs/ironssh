@@ -1243,13 +1243,13 @@ do_download(struct sftp_conn *conn, const char *remote_path,
 		output_path = iron_name;
 	}
 	if (access(output_path, F_OK) == 0) {
-		printf("Output file \"%s\" already exists. Overwrite (y/n)? ", output_path);
+		printf("Output file \"%s\" already exists.\nOverwrite (y/n)? ", output_path);
 		if (!get_user_confirmation()) {
 			return(-1);
 		}
 	}
 	if (access(local_path, F_OK) == 0) {
-		printf("Download destination file \"%s\" already exists. Overwrite (y/n)? ", local_path);
+		printf("Download destination file \"%s\" already exists.\nOverwrite (y/n)? ", local_path);
 		if (!get_user_confirmation()) {
 			return(-1);
 		}
@@ -1685,7 +1685,7 @@ do_upload(struct sftp_conn *conn, const char *local_path,
 
 	c = do_stat(conn, remote_path, 1);
 	if (c != NULL) {
-		printf("Encrypted file \"%s\" exists on remote server. Overwrite (y/n)? ", remote_path);
+		printf("Encrypted file \"%s\" exists on remote server.\nOverwrite (y/n)? ", remote_path);
 		if (!get_user_confirmation()) {
 			return(-1);
 		}
