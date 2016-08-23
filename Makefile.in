@@ -69,6 +69,9 @@ TARGETS=ssh$(EXEEXT) sshd$(EXEEXT) ssh-add$(EXEEXT) ssh-keygen$(EXEEXT) ssh-keys
 #SODIUM_DIR = /usr/local/Cellar/libsodium/${SODIUM_VER}
 
 TARGETS += ironsftp$(EXEEXT)
+IRON_OBJS = \
+	iron/gpg.o iron/gpg-key.o iron/gpg-keyfile.o iron/gpg-packet.o \
+	iron/gpg-trustdb.o iron/recipient.o iron/util.o
 # ***
 
 LIBOPENSSH_OBJS=\
@@ -167,8 +170,8 @@ libssh.a: $(LIBSSH_OBJS)
 	$(AR) rv $@ $(LIBSSH_OBJS)
 	$(RANLIB) $@
 
-ironsftp$(EXEEXT): $(LIBCOMPAT) iron-sftp.o iron-sftp-client.o iron-sftp-common.o iron-progressmeter.o iron-gpg.o sftp-glob.o libssh.a
-	$(LD) -o $@ iron-sftp.o iron-sftp-client.o iron-sftp-common.o iron-progressmeter.o iron-gpg.o sftp-glob.o $(LDFLAGS) -lsodium -lssh -lopenbsd-compat $(LIBS) $(LIBEDIT)
+ironsftp$(EXEEXT): $(LIBCOMPAT) iron-sftp.o iron-sftp-client.o iron-sftp-common.o iron-progressmeter.o $(IRON_OBJS) sftp-glob.o libssh.a
+	$(LD) -o $@ iron-sftp.o iron-sftp-client.o iron-sftp-common.o iron-progressmeter.o $(IRON_OBJS) sftp-glob.o $(LDFLAGS) -lsodium -lssh -lopenbsd-compat $(LIBS) $(LIBEDIT)
 
 iron-sftp.o: sftp.c iron-gpg.h
 	$(CC) $(CFLAGS) $(CPPFLAGS) -DIRONCORE -c sftp.c -o $@
@@ -181,9 +184,6 @@ iron-sftp-common.o: sftp-common.c iron-gpg.h
 
 iron-progressmeter.o: progressmeter.c iron-gpg.h
 	$(CC) $(CFLAGS) $(CPPFLAGS) -DIRONCORE -c progressmeter.c -o $@
-
-iron-gpg.o: iron-gpg.c iron-gpg.h
-	$(CC) $(CFLAGS) $(CPPFLAGS) -c iron-gpg.c -o $@
 
 ssh$(EXEEXT): $(LIBCOMPAT) libssh.a $(SSHOBJS)
 	$(LD) -o $@ $(SSHOBJS) $(LDFLAGS) -lssh -lopenbsd-compat $(SSHLIBS) $(LIBS) $(GSSLIBS)
@@ -251,7 +251,7 @@ umac128.o:	umac.c
 	    -Dumac_delete=umac128_delete -Dumac_ctx=umac128_ctx
 
 clean:	regressclean
-	rm -f *.o *.a $(TARGETS) logintest config.cache config.log
+	rm -f *.o iron/*.o *.a $(TARGETS) logintest config.cache config.log
 	rm -f *.out core survey
 	rm -f regress/unittests/test_helper/*.a
 	rm -f regress/unittests/test_helper/*.o
@@ -476,10 +476,10 @@ regress/check-perm$(EXEEXT): $(srcdir)/regress/check-perm.c $(REGRESSLIBS)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ $(srcdir)/regress/check-perm.c \
 	$(LDFLAGS) -lssh -lopenbsd-compat -lssh -lopenbsd-compat $(LIBS)
 
-regress/enc-dec-file$(EXEEXT): $(srcdir)/regress/enc-dec-file.c iron-gpg.o \
-	iron-sftp-common.o iron-gpg.h iron-common.h
+regress/enc-dec-file$(EXEEXT): $(srcdir)/regress/enc-dec-file.c \
+	iron-sftp-common.o $(IRON_OBJS) iron-gpg.h iron-common.h
 	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ $(srcdir)/regress/enc-dec-file.c \
-	iron-gpg.o iron-sftp-common.o $(LDFLAGS) -lssh -lopenbsd-compat \
+	iron-sftp-common.o $(IRON_OBJS) $(LDFLAGS) -lssh -lopenbsd-compat \
 	-lsodium $(LIBS)
 
 UNITTESTS_TEST_HELPER_OBJS=\
@@ -561,11 +561,11 @@ UNITTESTS_TEST_IRONGPG_OBJS=\
 	iron-sftp-common.o
 
 regress/unittests/irongpg/test_irongpg$(EXEEXT): \
-    ${UNITTESTS_TEST_IRONGPG_OBJS} \
+    ${UNITTESTS_TEST_IRONGPG_OBJS} ${IRON_OBJS} \
     regress/unittests/test_helper/libtest_helper.a libssh.a
 	$(LD) -o $@ $(LDFLAGS) $(UNITTESTS_TEST_IRONGPG_OBJS) \
-	    regress/unittests/test_helper/libtest_helper.a -lsodium \
-	    -lssh -lopenbsd-compat -lssh -lopenbsd-compat $(LIBS)
+	    $(IRON_OBJS) regress/unittests/test_helper/libtest_helper.a \
+	    -lsodium -lssh -lopenbsd-compat -lssh -lopenbsd-compat $(LIBS)
 
 regress/unittests/irongpg/iron-gpg-tests.o: iron-gpg.c iron-gpg.h
 	$(CC) $(CFLAGS) $(CPPFLAGS) -DTESTING -c iron-gpg.c -o $@
