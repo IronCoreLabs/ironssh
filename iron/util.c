@@ -117,12 +117,12 @@ iron_int_to_buf(int val, u_char * buf)
 u_int32_t
 iron_buf_to_int(const u_char * buf)
 {
-	unsigned int len = 0;
-	for (int i = 0; i < 4; i++) {
-		len = (len << 8) + buf[i];
-	}
+    unsigned int len = 0;
+    for (int i = 0; i < 4; i++) {
+        len = (len << 8) + buf[i];
+    }
 
-	return len;
+    return len;
 }
 
 /**
@@ -182,57 +182,6 @@ iron_put_num_sexpr(struct sshbuf * buf, const u_char * bstr, int bstr_len)
         sshbuf_put(buf, bstr, bstr_len - 1);
     } else {
         sshbuf_put(buf, bstr, bstr_len);
-    }
-}
-
-/**
- *  Given a login, generate path of ~<login>/.ssh/.
- *
- *  Find the home directory for the specified login and append '/.ssh/ to it.
- *
- *  @param login User for whom to generate path
- *  @param ssh_dir Place to write path (at least PATH_MAX chars)
- */
-static void
-populate_ssh_dir(const char * const login, char * ssh_dir)
-{
-    struct passwd * pw = getpwnam(login);
-    if (pw != NULL) {
-        snprintf(ssh_dir, PATH_MAX, "%s/.ssh/", pw->pw_dir);
-    } else {
-        *ssh_dir = '\0';
-    }
-}
-
-/**
- *  Generate the path to the .ssh directory for the specified login.
- *
- *  Cache the sshdir if the login is the current user. Return cached dir if login user_login.
- *  If path can't be determined, returns an empty string.
- *
- *  Nope, this is not even close to thread safe. Not a problem for now.
- *
- *  @param login Login of user for whom to get path to .ssh dir.
- *  @return char * Path, or empty string if unable to determine
- */
-const char *
-iron_get_user_ssh_dir(const char * const login)
-{
-    /* If the requested login is the current user's login, cache the ssh directory value, since we will
-     * probably need it a few times.
-     */
-    static char curr_ssh_dir[PATH_MAX] = { 0 };
-
-    if (strcmp(login, iron_user_login()) == 0) {
-        if (!(*curr_ssh_dir)) {
-            populate_ssh_dir(login, curr_ssh_dir);
-        }
-        return curr_ssh_dir;
-    }
-    else {
-        static char ssh_dir[PATH_MAX];
-        populate_ssh_dir(login, ssh_dir);
-        return ssh_dir;
     }
 }
 
@@ -313,15 +262,15 @@ iron_compute_sha1_hash_chars(const u_char * bstr, int bstr_len, u_char * hash)
  */
 int
 iron_hashcrypt(SHA_CTX * mdc_ctx, SHA256_CTX * sig_ctx, EVP_CIPHER_CTX * aes_ctx, const u_char * input,
-	   	  int size, u_char * output)
+          int size, u_char * output)
 {
-	int num_written;
-	SHA1_Update(mdc_ctx, input, size);
-	if (sig_ctx != NULL) {
-		SHA256_Update(sig_ctx, input, size);
-	}
-	if (EVP_EncryptUpdate(aes_ctx, output, &num_written, input, size)) return num_written;
-	else return -1;
+    int num_written;
+    SHA1_Update(mdc_ctx, input, size);
+    if (sig_ctx != NULL) {
+        SHA256_Update(sig_ctx, input, size);
+    }
+    if (EVP_EncryptUpdate(aes_ctx, output, &num_written, input, size)) return num_written;
+    else return -1;
 }
 
 

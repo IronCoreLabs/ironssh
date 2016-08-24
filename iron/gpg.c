@@ -42,6 +42,12 @@ static int      gpg_now;        //  Everything that timestamps a packet during t
                                 //  use this time, so they all get timestamped the same.
 static char   * user_login;     //  Stores the login of the user running the process. Set at initialization.
 
+static char   * user_ssh_dir;   //  The ~/.ssh directory for user_login.
+
+static char   * user_ironcore_dir;  //  The ~/.ssh/ironcore directory for user_login.
+
+static char   * hostname = "";  //  Name of the host to which ironsftp connected
+
 static int      inited = 0;     //  Indicates that the process has initialized everything needed for IronSFTP
 
 /**
@@ -67,6 +73,11 @@ iron_initialize(void)
             fatal("Unable to determine current user's login\n");
         } else {
             user_login = xstrdup(user_pw->pw_name);
+            char path[PATH_MAX];
+            sprintf(path, "%s/.ssh/", user_pw->pw_dir);
+            user_ssh_dir = xstrdup(path);
+            strlcat(path, IRONCORE_SUBDIR, PATH_MAX);
+            user_ironcore_dir = xstrdup(path);
         }
         inited = 1;
     }
@@ -75,15 +86,42 @@ iron_initialize(void)
     return retval;
 }
 
+void
+iron_set_host(const char * remote_host){
+    if (remote_host && *remote_host) hostname = xstrdup(remote_host);
+}
+
+const char *
+iron_host(void)
+{
+    return hostname;
+}
+
 const char *
 iron_user_login(void)
 {
+    if (!inited) iron_initialize();
     return user_login;
+}
+
+const char *
+iron_user_ssh_dir(void)
+{
+    if (!inited) iron_initialize();
+    return user_ssh_dir;
+}
+
+const char *
+iron_user_ironcore_dir(void)
+{
+    if (!inited) iron_initialize();
+    return user_ironcore_dir;
 }
 
 u_int32_t
 iron_gpg_now(void)
 {
+    if (!inited) iron_initialize();
     return gpg_now;
 }
 
@@ -459,7 +497,7 @@ process_enc_data_hdr(SHA_CTX * mdc_ctx, EVP_CIPHER_CTX * aes_ctx, FILE * infile,
     fname[fname_len] = '\0';
     dptr += fname_len;
 
-    u_int32_t file_ts = iron_buf_to_int(dptr);
+    // u_int32_t file_ts = iron_buf_to_int(dptr);  Not using currently, so just skip over
     dptr += 4;
 
     *len -= fname_len + 1 /*format spec*/ + 1 /* fname len byte*/ + 4 /*timestamp*/;
