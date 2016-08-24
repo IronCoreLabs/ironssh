@@ -17,18 +17,33 @@
 #ifndef _IRON_GPG_H
 #define _IRON_GPG_H
 
-#define IRON_ERR_NOT_ENCRYPTED	-101	//  Attempted to decrypt a file, but didn't find the GPG info we expected
-#define IRON_ERR_NOT_FOR_USER	-102	//  File was encrypted, but not to the user retrieving it
-#define IRON_ERR_NO_OVERWRITE	-103	//  File exists, and user doesn't want to overwrite
+#define IRON_ERR_NOT_ENCRYPTED  -101    //  Attempted to decrypt a file, but didn't find the GPG info we expected
+#define IRON_ERR_NOT_FOR_USER   -102    //  File was encrypted, but not to the user retrieving it
+#define IRON_ERR_NO_OVERWRITE   -103    //  File exists, and user doesn't want to overwrite
 
-extern int	check_iron_keys(void);
-extern int	write_gpg_encrypted_file(const char * fname, char * enc_fname);
-extern int	write_gpg_decrypted_file(const char * fname, char * dec_fname);
+#define IRON_PUBKEY_FNAME       ".ironpubkey"   //  Name of the file in user's home dir that holds public key info
 
-extern void	iron_reset_recipients();
-extern int	iron_add_recipient(const char * login);
-extern int	iron_remove_recipient(const char * login);
-extern int	iron_extension_offset(const char * name);
+
+extern const char * iron_host(void);
+extern const char * iron_user_login(void);
+extern const char * iron_user_ssh_dir(void);
+extern const char * iron_user_ironcore_dir(void);
+extern const char * iron_user_pubkey_file(void);
+extern const char * iron_pubkey_file(const char * login);
+
+extern void iron_set_host(const char * hostname);
+extern int  iron_check_keys(void);
+extern int  iron_generate_keys(void);
+
+
+extern int  write_gpg_encrypted_file(const char * fname, char * enc_fname);
+extern int  write_gpg_decrypted_file(const char * fname, char * dec_fname);
+
+extern void iron_reset_recipients();
+extern int  iron_add_recipient(const char * login);
+extern int  iron_remove_recipient(const char * login);
+
+extern int  iron_extension_offset(const char * name);
 
 
 #endif  /* _IRON_GPG_H */
