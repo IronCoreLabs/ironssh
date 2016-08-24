@@ -213,7 +213,7 @@ iron_remove_recipient(const char * login)
  *  user's entry. That one should always be in the list.
  */
 void
-iron_reset_recipients(void)
+iron_clear_recipients(void)
 {
     if (num_recipients >= 1) num_recipients = 1;
 }
@@ -224,7 +224,7 @@ iron_reset_recipients(void)
  *  For each of the entries (including the current user), display the login.
  */
 void
-iron_list_recipients(void)
+iron_show_recipients(void)
 {
 
     const gpg_public_key * recip_list;

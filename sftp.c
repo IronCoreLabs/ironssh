@@ -206,7 +206,7 @@ static const struct CMD cmds[] = {
 	{ "dir",	I_LS,		REMOTE	},
 	{ "exit",	I_QUIT,		NOARGS	},
 #ifdef IRONCORE
-	{ "finduser",	I_FIND_USER,	LOCAL	},
+	{ "finduser",	I_FIND_USER,	REMOTE	},
 #endif
 	{ "get",	I_GET,		REMOTE	},
 	{ "help",	I_HELP,		NOARGS	},
@@ -1798,10 +1798,10 @@ parse_dispatch_command(struct sftp_conn *conn, const char *cmd, char **pwd,
 		}
 		break;
 	case I_CLR_RCPT:
-		iron_reset_recipients();
+		iron_clear_recipients();
 		break;
 	case I_SHOW_RCPT:
-		iron_list_recipients();
+		iron_show_recipients();
 		break;
 	case I_FIND_USER:
 		if (retrieve_user_pubkeys(conn, path1) == 0) {

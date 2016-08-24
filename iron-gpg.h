@@ -40,8 +40,8 @@ extern const char * iron_pubkey_file(const char * login);
 extern int  write_gpg_encrypted_file(const char * fname, char * enc_fname);
 extern int  write_gpg_decrypted_file(const char * fname, char * dec_fname);
 
-extern void iron_reset_recipients(void);
-extern void iron_list_recipients(void);
+extern void iron_clear_recipients(void);
+extern void iron_show_recipients(void);
 extern int  iron_add_recipient(const char * login);
 extern int  iron_remove_recipient(const char * login);
 extern int  iron_index_user(const char * login);
