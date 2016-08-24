@@ -231,6 +231,11 @@ static const struct CMD cmds[] = {
 	{ NULL,		-1,		-1	}
 };
 
+#ifdef IRONCORE
+const char * home_dir_root;
+#endif
+
+
 int interactive_loop(struct sftp_conn *, char *file1, char *file2);
 
 /* ARGSUSED */
@@ -717,7 +722,11 @@ process_get(struct sftp_conn *conn, const char *src, const char *dst,
 		} else {
 			if (do_download(conn, g.gl_pathv[i], abs_dst, NULL,
 			    pflag || global_pflag, resume,
-			    fflag || global_fflag) == -1)
+			    fflag || global_fflag
+#ifdef IRONCORE
+				, 1 /*decrypt downloaded file if possible*/
+#endif
+				) == -1)
 				err = -1;
 		}
 		free(abs_dst);
@@ -820,7 +829,11 @@ process_put(struct sftp_conn *conn, const char *src, const char *dst,
 		} else {
 			if (do_upload(conn, g.gl_pathv[i], abs_dst,
 			    pflag || global_pflag, resume,
-			    fflag || global_fflag) == -1)
+			    fflag || global_fflag
+#ifdef IRONCORE
+				, 1 /*encrypt_flag*/
+#endif
+				) == -1)
 				err = -1;
 		}
 	}
@@ -995,6 +1008,7 @@ do_globbed_ls(struct sftp_conn *conn, const char *path,
 	 * If the glob returns a single match and it is a directory,
 	 * then just list its contents.
 	 */
+
 	if (g.gl_matchc == 1 && g.gl_statv[0] != NULL &&
 	    S_ISDIR(g.gl_statv[0]->st_mode)) {
 		err = do_ls_dir(conn, g.gl_pathv[0], strip_path, lflag);
@@ -1751,14 +1765,14 @@ parse_dispatch_command(struct sftp_conn *conn, const char *cmd, char **pwd,
 		break;
 #ifdef IRONCORE
 	case I_ADD_RCPT:
-		if (add_recipient(path1) == 0) {
+		if (retrieve_user_pubkeys(conn, path1) == 0 && iron_add_recipient(path1) == 0) {
 			mprintf("Added login %s to the recipient list\n", path1);
 		} else {
 			err = 1;
 		}
 		break;
 	case I_RM_RCPT:
-		if (remove_recipient(path1) == 0) {
+		if (iron_remove_recipient(path1) == 0) {
 			mprintf("Removed login %s from the recipient list\n", path1);
 		} else {
 			err = 1;
@@ -2569,9 +2583,42 @@ main(int argc, char **argv)
 	}
 
 #ifdef IRONCORE
+	iron_set_host(host);
+	/*  Save off the home directory on the remote machine, in case we need it to find other users' pubkeys.  */
+	char * remote_path = do_realpath(conn, ".");
+	if (remote_path == NULL)
+		fatal("Can't determine remote home directory.");
+	add_home_dir_root(remote_path);
+
 	/*  Generate the GPG key files if they aren't there already.  */
-	if (check_iron_keys() == -1) {
-		fatal("Couldn't find or generate secure file sharing keys.");
+	int keys_available = iron_check_keys();
+	if (keys_available < 0) {
+		fatal("Unable to start.");
+	}
+   
+	if (keys_available == 0) {
+		glob_t g;
+		if (remote_glob(conn, IRON_PUBKEY_FNAME, GLOB_MARK, NULL, &g) == 0) {
+			logit("WARNING: you don't have IronCore keys available on the local machine, but\n"
+				  "there is a %s file on the server, so you probably already generated\n"
+				  "the IronCore keys on a different machine.\n"
+				  "Do you want to generate new keys on this machine?",
+				  IRON_PUBKEY_FNAME);
+			if (!get_user_confirmation()) {
+				fatal("Copy your keys to the local machine then rerun %s.", argv[0]);
+			}
+		}
+
+		//  The .pubkey file wasn't on the server, or the user wants to generate local keys anyway.
+		if (iron_generate_keys() < 0) fatal("Unable to start.");
+	}
+   
+	//  Local keys available - upload the user's pubkey file to the server. We do this unconditionally
+	//  because it's as efficient as checking whether the remote file is there or not.
+	const char * fname = iron_user_pubkey_file();
+	if (do_upload(conn, fname, IRON_PUBKEY_FNAME, 1 /*preserve times*/, 0 /*no resume*/,
+		   			   0 /*no sync*/, 0 /*no encrypt*/) != 0) {
+		fatal("Unable to upload %s to %s on the server.", fname, IRON_PUBKEY_FNAME);
 	}
 #endif
 

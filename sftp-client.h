@@ -114,7 +114,11 @@ int do_fsync(struct sftp_conn *conn, u_char *, u_int);
  * if 'pflag' is set
  */
 int do_download(struct sftp_conn *, const char *, const char *,
-    Attrib *, int, int, int);
+    Attrib *, int, int, int
+#ifdef IRONCORE
+	, int decrypt_flag
+#endif
+	);
 
 /*
  * Recursively download 'remote_directory' to 'local_directory'. Preserve
@@ -127,7 +131,11 @@ int download_dir(struct sftp_conn *, const char *, const char *,
  * Upload 'local_path' to 'remote_path'. Preserve permissions and times
  * if 'pflag' is set
  */
-int do_upload(struct sftp_conn *, const char *, const char *, int, int, int);
+int do_upload(struct sftp_conn *, const char *, const char *, int, int, int
+#ifdef IRONCORE
+				, int encrypt_flag
+#endif
+	);
 
 /*
  * Recursively upload 'local_directory' to 'remote_directory'. Preserve
@@ -138,5 +146,17 @@ int upload_dir(struct sftp_conn *, const char *, const char *, int, int, int,
 
 /* Concatenate paths, taking care of slashes. Caller must free result. */
 char *path_append(const char *, const char *);
+
+#ifdef IRONCORE
+void add_home_dir_root(const char * path);
+
+int retrieve_user_pubkeys(struct sftp_conn * conn, const char * login);
+
+/*
+ * Prompt user for a y/n response to a prompt. Read input line from stdin, return
+ * true if it starts with y or Y (after skipping leading white space).
+ */
+int get_user_confirmation(void);
+#endif
 
 #endif
