@@ -32,7 +32,6 @@
 #define IRONCORE_SUBDIR         "ironcore/"     //  subdir of ~/.ssh that holds all IronCore files
 
 
-extern int          iron_initialize(void);
 extern u_int32_t    iron_gpg_now();
 
 #endif

@@ -879,7 +879,7 @@ get_gpg_curve25519_key_packet(FILE * infile)
  *  @return int 0 if successful, negative number if error
 */
 int
-get_gpg_pkesk_packet(FILE * infile, const char * key_id, u_char * msg, gpg_tag * next_tag, int * next_len)
+get_gpg_pkesk_packet(FILE * infile, const char * key_id, u_char * pkt, gpg_tag * next_tag, int * next_len)
 {
     int retval = IRON_ERR_NOT_FOR_USER;
 
@@ -892,6 +892,11 @@ get_gpg_pkesk_packet(FILE * infile, const char * key_id, u_char * msg, gpg_tag *
         return IRON_ERR_NOT_ENCRYPTED;
     }
 
+    int known_user_ct = 0;
+    int unknown_user_ct = 0;
+    char known_users[10 * (IRON_MAX_LOGIN_LEN + 2) + 1];
+    known_users[0] = '\0';
+
     while (tag == GPG_TAG_PKESK && !feof(infile)) {
         u_char pkt_start[GPG_KEY_ID_LEN + 1];
         if (fread(pkt_start, 1, sizeof(pkt_start), infile) == sizeof(pkt_start)) {
@@ -899,8 +904,10 @@ get_gpg_pkesk_packet(FILE * infile, const char * key_id, u_char * msg, gpg_tag *
             if (*pkt_start != GPG_PKESK_VERSION) {
                 retval = IRON_ERR_NOT_ENCRYPTED;
                 break;
-            } else if (memcmp(key_id, pkt_start + 1, GPG_KEY_ID_LEN) == 0) {
-                if (fread(msg, 1, left_to_read, infile) == left_to_read) {
+            }
+           
+            if (memcmp(key_id, pkt_start + 1, GPG_KEY_ID_LEN) == 0) {
+                if (fread(pkt, 1, left_to_read, infile) == left_to_read) {
                     retval = 0;
                 } else {
                     retval = IRON_ERR_NOT_ENCRYPTED;
@@ -911,6 +918,23 @@ get_gpg_pkesk_packet(FILE * infile, const char * key_id, u_char * msg, gpg_tag *
                     retval = IRON_ERR_NOT_ENCRYPTED;
                     break;
                 }
+            }
+           
+            //  Try to figure out the user name associated with the key ID
+            const char * login;
+            const gpg_public_key * user_keys = iron_get_recipient_keys_by_key_id(pkt_start + 1);
+            if (user_keys != NULL) login = user_keys->login;
+            else login = iron_get_user_by_key_id(pkt_start + 1);
+            if (login != NULL) {
+                if (strlen(known_users) + strlen(login) + 3 < sizeof(known_users)) {
+                    if (known_user_ct > 0) {
+                        strcat(known_users, ", ");
+                    }
+                    strlcat(known_users, login, IRON_MAX_LOGIN_LEN + 1);
+                    known_user_ct++;
+                }
+            } else {
+                unknown_user_ct++;
             }
         } else {
             retval = IRON_ERR_NOT_ENCRYPTED;
@@ -924,6 +948,14 @@ get_gpg_pkesk_packet(FILE * infile, const char * key_id, u_char * msg, gpg_tag *
     }
 
     if (retval == 0 && !feof(infile)) {
+        if (*known_users != '\0') {
+            logit("Data was encrypted to user%s %s", (known_user_ct > 1) ? "s" : "", known_users);
+            if (unknown_user_ct > 0) {
+                logit("and to %d unknown user%s.", unknown_user_ct, (unknown_user_ct > 1) ? "s" : "");
+            }
+        } else if (unknown_user_ct > 0) {
+            logit("Data was encrypted to %d unknown user%s.", unknown_user_ct, (unknown_user_ct > 1) ? "s" : "");
+        }
         *next_tag = tag;
         *next_len = len;
     }
@@ -966,7 +998,7 @@ extract_gpg_one_pass_signature_packet(const u_char * buf, int buf_len, u_char * 
  *  Generate a GPG One Pass Signature packet.
  *
  *  @param key_id ID of the RSA key that will be signing the following data.
- *  @param msg Place to write generated packet
+ *  @param ops_pkt Place to write generated packet
  */
 void
 generate_gpg_one_pass_signature_packet(const u_char * key_id, gpg_packet * ops_pkt)
@@ -1129,6 +1161,9 @@ process_data_signature_packet(const u_char * dec_buf, int buf_len, SHA256_CTX * 
     dptr += 2;
 
     const gpg_public_key * signer_keys = iron_get_recipient_keys_by_key_id(key_id);
+    if (signer_keys == NULL) {
+        signer_keys = iron_get_user_keys_by_key_id(key_id);
+    }
     if (signer_keys != NULL) {
         int sig_len = (*dptr << 8) + *(dptr + 1);   //  Size in bits
         dptr += 2;
