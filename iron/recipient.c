@@ -126,9 +126,9 @@ iron_add_recipient(const char * login)
 {
     int retval = 0;
 
-	/*  In case this is called before anything else has accessed the list - we want to make sure that the
-	 *  first entry in the list is always the current user.
-	 */
+    /*  In case this is called before anything else has accessed the list - we want to make sure that the
+     *  first entry in the list is always the current user.
+     */
     if (num_recipients == 0 && strcmp(login, iron_user_login()) != 0) iron_add_recipient(iron_user_login());
 
     for (int i = 0; i < num_recipients; i++) {
@@ -150,7 +150,7 @@ iron_add_recipient(const char * login)
             new_ent->rsa_key.ecdsa_nid  = -1;
             if (get_gpg_public_keys(login, &(new_ent->rsa_key), new_ent->signer_fp, new_ent->key, &key_len,
                                     new_ent->fp) == 0) {
-				if (strcmp(login, iron_user_login()) != 0) iron_index_public_keys(new_ent);
+                if (strcmp(login, iron_user_login()) != 0) iron_index_public_keys(new_ent);
                 num_recipients++;
             } else {
                 error("Unable to retrieve public key information for user %s", login);
@@ -227,14 +227,14 @@ void
 iron_list_recipients(void)
 {
 
-	const gpg_public_key * recip_list;
-	int rct = iron_get_recipients(&recip_list);
-	if (rct >= 0) {
-		logit("Currently registered recipients:");
-		for (int i = 0; i < rct; i++) {
-			logit("  %s", recip_list[i].login);
-		}
-	} else {
-		error("Unable to retrieve list of recipients.");
-	}
+    const gpg_public_key * recip_list;
+    int rct = iron_get_recipients(&recip_list);
+    if (rct >= 0) {
+        logit("Currently registered recipients:");
+        for (int i = 0; i < rct; i++) {
+            logit("  %s", recip_list[i].login);
+        }
+    } else {
+        error("Unable to retrieve list of recipients.");
+    }
 }
