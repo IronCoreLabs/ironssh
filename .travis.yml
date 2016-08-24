@@ -1,0 +1,22 @@
+sudo: required
+services:
+  - docker
+
+cache: ccache
+
+env:
+    matrix:
+      - OS=centos DIST=7 PACK=rpm
+      - OS=fedora DIST=23 PACK=rpm
+      - OS=fedora DIST=24 PACK=rpm
+      - OS=fedora DIST=rawhide PACK=rpm
+      - PACK=none
+
+script:
+  - git clone https://github.com/tarantool/build.git
+  - git describe --long --always > VERSION
+  - ./build/pack/travis.sh
+
+notifications:
+  email: true
+  irc: false
