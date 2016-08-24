@@ -24,6 +24,11 @@
 #define IRON_PUBKEY_FNAME       ".ironpubkey"   //  Name of the file in user's home dir that holds public key info
 
 
+extern int  iron_initialize(void);
+extern void iron_set_host(const char * hostname);
+extern int  iron_check_keys(void);
+extern int  iron_generate_keys(void);
+
 extern const char * iron_host(void);
 extern const char * iron_user_login(void);
 extern const char * iron_user_ssh_dir(void);
@@ -31,19 +36,15 @@ extern const char * iron_user_ironcore_dir(void);
 extern const char * iron_user_pubkey_file(void);
 extern const char * iron_pubkey_file(const char * login);
 
-extern void iron_set_host(const char * hostname);
-extern int  iron_check_keys(void);
-extern int  iron_generate_keys(void);
-
 
 extern int  write_gpg_encrypted_file(const char * fname, char * enc_fname);
 extern int  write_gpg_decrypted_file(const char * fname, char * dec_fname);
 
-extern void iron_reset_recipients();
+extern void iron_clear_recipients(void);
+extern void iron_show_recipients(void);
 extern int  iron_add_recipient(const char * login);
 extern int  iron_remove_recipient(const char * login);
-
+extern int  iron_index_user(const char * login);
 extern int  iron_extension_offset(const char * name);
-
 
 #endif  /* _IRON_GPG_H */

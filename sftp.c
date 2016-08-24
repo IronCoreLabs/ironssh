@@ -172,6 +172,9 @@ enum sftp_command {
 #ifdef IRONCORE
 	I_ADD_RCPT,
 	I_RM_RCPT,
+	I_CLR_RCPT,
+	I_SHOW_RCPT,
+	I_FIND_USER,
 #endif
 };
 
@@ -196,9 +199,15 @@ static const struct CMD cmds[] = {
 	{ "chgrp",	I_CHGRP,	REMOTE	},
 	{ "chmod",	I_CHMOD,	REMOTE	},
 	{ "chown",	I_CHOWN,	REMOTE	},
+#ifdef IRONCORE
+	{ "clrrcpt",I_CLR_RCPT,	LOCAL	},
+#endif
 	{ "df",		I_DF,		REMOTE	},
 	{ "dir",	I_LS,		REMOTE	},
 	{ "exit",	I_QUIT,		NOARGS	},
+#ifdef IRONCORE
+	{ "finduser",	I_FIND_USER,	REMOTE	},
+#endif
 	{ "get",	I_GET,		REMOTE	},
 	{ "help",	I_HELP,		NOARGS	},
 	{ "lcd",	I_LCHDIR,	LOCAL	},
@@ -223,6 +232,7 @@ static const struct CMD cmds[] = {
 	{ "rmdir",	I_RMDIR,	REMOTE	},
 #ifdef IRONCORE
 	{ "rmrcpt",	I_RM_RCPT,	LOCAL	},
+	{ "showrcpt",	I_SHOW_RCPT,	LOCAL	},
 #endif
 	{ "symlink",	I_SYMLINK,	REMOTE	},
 	{ "version",	I_VERSION,	NOARGS	},
@@ -274,9 +284,13 @@ help(void)
 	    "chgrp grp path                     Change group of file 'path' to 'grp'\n"
 	    "chmod mode path                    Change permissions of file 'path' to 'mode'\n"
 	    "chown own path                     Change owner of file 'path' to 'own'\n"
+#ifdef IRONCORE
+		"clrrcpt                            Clear all users added to recipient list\n"
+#endif
 	    "df [-hi] [path]                    Display statistics for current directory or\n"
 	    "                                   filesystem containing 'path'\n"
 	    "exit                               Quit sftp\n"
+	    "finduser                           Search for sharing info for login on remote server\n"
 	    "get [-afPpRr] remote [local]       Download file\n"
 	    "reget [-fPpRr] remote [local]      Resume download file\n"
 	    "reput [-fPpRr] [local] remote      Resume upload file\n"
@@ -298,6 +312,7 @@ help(void)
 	    "rmdir path                         Remove remote directory\n"
 #ifdef IRONCORE
 		"rmrcpt login                       Remove login from recipient list\n"
+		"showrcpt                           Show users currently on recipient list\n"
 #endif
 	    "symlink oldpath newpath            Symlink remote file\n"
 	    "version                            Show SFTP version\n"
@@ -1509,6 +1524,7 @@ parse_args(const char **cpp, int *ignore_errors, int *aflag,
 #ifdef IRONCORE
 	case I_ADD_RCPT:
 	case I_RM_RCPT:
+	case I_FIND_USER:
 		if ((optidx = parse_no_flags(cmd, argv, argc)) <= 0)
 			return -1;
 		/* Login is required */
@@ -1517,6 +1533,9 @@ parse_args(const char **cpp, int *ignore_errors, int *aflag,
 			return -1;
 		}
 		*path1 = xstrdup(argv[optidx]);
+		break;
+	case I_SHOW_RCPT:
+	case I_CLR_RCPT:
 		break;
 #endif
 	default:
@@ -1774,6 +1793,20 @@ parse_dispatch_command(struct sftp_conn *conn, const char *cmd, char **pwd,
 	case I_RM_RCPT:
 		if (iron_remove_recipient(path1) == 0) {
 			mprintf("Removed login %s from the recipient list\n", path1);
+		} else {
+			err = 1;
+		}
+		break;
+	case I_CLR_RCPT:
+		iron_clear_recipients();
+		break;
+	case I_SHOW_RCPT:
+		iron_show_recipients();
+		break;
+	case I_FIND_USER:
+		if (retrieve_user_pubkeys(conn, path1) == 0) {
+			mprintf("Found sharing info for login %s\n", path1);
+			if (iron_index_user(path1) != 0) error("Unable to add sharing info to index.");
 		} else {
 			err = 1;
 		}
@@ -2583,6 +2616,9 @@ main(int argc, char **argv)
 	}
 
 #ifdef IRONCORE
+	if (iron_initialize() < 0) {
+		fatal("Unable to intialize secure file sharing.");
+	}
 	iron_set_host(host);
 	/*  Save off the home directory on the remote machine, in case we need it to find other users' pubkeys.  */
 	char * remote_path = do_realpath(conn, ".");

@@ -50,9 +50,12 @@
 #define GPG_SECKEY_SUBDIR       "private-keys-v1.d/"
 #define IRON_PUBKEY_LOCAL_FNAME "ironpubkey"    //  Name of the file when it is created in ~/.ssh
 #define IRON_PUBKEY_SUBDIR      "pubkeys/"      //  Name of the subdir of ~/.ssh that holds other users' public keys
+#define IRON_PUBKEYIDX_SUBDIR   "pubkeyidx/"    //  Name of the subdir of ~/.ssh that holds index of pubkeys by
+                                                //      key ID
 
 #define GPG_MAX_UID_LEN         128     //  Max # bytes for a user ID / comment on a public SSH key
 #define MAX_PASSPHRASE_RETRIES  3       //  Number of times user is prompted to enter passphrase to access SSH key
+#define MAX_IDX_LINE_LEN        256     //  Room for "iron-cv25519: <user>@<host>
 
 
 /**
@@ -965,3 +968,212 @@ get_gpg_secret_encryption_key(const gpg_public_key * pub_keys, u_char * sec_key)
     return retval;
 }
 
+//================================================================================
+//  Functions to maintain an index of key IDs and the user@host pubkeys that have
+//  those key IDs.
+//
+//  Nothing fancy - just create files in ~/.ssh/ironcore/pubkeyidx named with
+//  the key ID, containing a line for each pubkey file that contains a key with
+//  that key ID. The line contains the type of key (e.g. iron-rsa), ": ", and
+//  the name of the file (<user>@<host>)
+//================================================================================
+
+/**
+ *  Open index file for the specified key ID.
+ *
+ *  Given a key ID, create or open the index file ~/.ssh/ironcore/pubkeyidx/<keyid>
+ *  in the specified mode.
+ *
+ *  @param key_id ID of the key for which to open index file
+ *  @param mode Mode string for fopen - either "a+", if indexing a file, or "r" if searching
+ *  @return FILE * Pointer to opened file, or NULL if unable to open
+ */
+static FILE *
+open_pubkey_idx_file(const u_char * key_id, const char * mode)
+{
+    char hex_id[2 * GPG_KEY_ID_LEN + 1];
+    iron_hex2str(key_id, GPG_KEY_ID_LEN, hex_id);
+
+    char fname[PATH_MAX];
+    snprintf(fname, sizeof(fname), "%s%s%s", iron_user_ironcore_dir(), IRON_PUBKEYIDX_SUBDIR, hex_id);
+    return fopen(fname, mode);
+}
+
+/**
+ *  Create/update index file for key ID
+ *
+ *  Given a key ID, create or open the index file ~/.ssh/ironcore/pubkeyidx/keyid.
+ *  Look through the file for an line like iron_<key_type>: <login>@<host>. If not found, append
+ *  that line to the file.
+ *
+ *  @param key_id Key ID to index
+ *  @param login User to associate with key ID
+ *  @param key_type Either "rsa" or "cv25519", currently
+ *  @return 0 if successful, negative number if error
+ */
+static int
+index_public_key(const u_char * key_id, const char * login, const u_char * key_type)
+{
+    int retval = -1;
+    FILE * idx_file = open_pubkey_idx_file(key_id, "a+");
+    if (idx_file != NULL) {
+        char entry[MAX_IDX_LINE_LEN];
+        snprintf(entry, sizeof(entry), "iron-%s: %s@%s", key_type, login, iron_host());
+        rewind(idx_file);
+        char line[MAX_IDX_LINE_LEN];
+        while (fgets(line, sizeof(line), idx_file)) {
+            if (strcmp(line, entry) == 0) {
+                retval = 0;
+                break;
+            }
+        }
+        if (feof(idx_file)) {
+            //  If we made it to the end of the file without finding the target entry,
+            //  add it to the file.
+            fputs(entry, idx_file);
+            fputc('\n', idx_file);
+            retval = 0;
+        }
+        fclose(idx_file);
+    } else {
+        char hex_id[2 * GPG_KEY_ID_LEN + 1];
+        iron_hex2str(key_id, GPG_KEY_ID_LEN, hex_id);
+        error("Error opening index file for key ID %s - %s.", hex_id, strerror(errno));
+    }
+
+    return retval;
+}
+
+/**
+ *  Write index files for a set of public keys.
+ *
+ *  Given a login's RSA and CV25519 keys, write the index files that map the key IDs to the user's
+ *  pubkey files.
+ *
+ *  @param keys Public key structure to index
+ *  @return int 0 if successful, negative number if problem
+ */
+int
+iron_index_public_keys(gpg_public_key * keys)
+{
+    int retval = 0;
+
+    if (*keys->signer_fp) retval = index_public_key(GPG_KEY_ID_FROM_FP(keys->signer_fp), keys->login, "rsa");
+    if (retval == 0 && *keys->fp) retval = index_public_key(GPG_KEY_ID_FROM_FP(keys->fp), keys->login, "cv25519");
+
+    return retval;
+}
+
+/**
+ *  Return the login for a specific key ID.
+ *
+ *  Searches the public key index. If the entry is found, look for a pubkey entry that matches the current host.
+ *  If that is found, return the login the corresponding user.
+ *
+ *  @param key_id ID whose keys to fetch
+ *  @returns char * Pointer to login for user, NULL if login couldn't be retrieved. Points to static array, so
+ *                  copy before calling again if you need to keep it
+ */
+char *
+iron_get_user_by_key_id(const char * key_id)
+{
+    char * lptr = NULL;
+    static char login[IRON_MAX_LOGIN_LEN + 1];
+
+    FILE * idx_file = open_pubkey_idx_file(key_id, "r");
+    if (idx_file != NULL) {
+        //  Search the file for a line that ends in "@<current host>\n"
+        int retval = -1;
+        char line[MAX_IDX_LINE_LEN];
+        char target[MAX_IDX_LINE_LEN];
+        snprintf(target, sizeof(target), "@%s\n", iron_host());
+        char * host_ptr;
+        while (fgets(line, MAX_IDX_LINE_LEN, idx_file)) {
+            host_ptr = line + strlen(line) - strlen(target);
+            if (strcmp(host_ptr, target) == 0) {
+                retval = 0;
+                break;
+            }
+        }
+        if (retval == 0) {
+            //  Found an entry in the file that matches the current host name. Compute offset of the
+            //  contain our keys. Fetch the login, which should be the string before the @<host>,
+            //  back to the preceding space.
+            *host_ptr = '\0';
+            char * login_ptr = strrchr(line, ' ');
+            if (login_ptr != NULL) {
+                login_ptr++;        //  Skip over ' '
+                strlcpy(login, login_ptr, sizeof(login));
+                lptr = login;
+            }
+        }
+        fclose(idx_file);
+    }
+
+    return lptr;
+}
+
+/**
+ *  Return the public keys for a specific key ID.
+ *
+ *  Searches the public key index. If the entry is found, look for a pubkey entry that matches the current host.
+ *  If that is found, load the keys for the corresponding user.
+ *
+ *  @param key_id ID whose keys to fetch
+ *  @returns gpg_public_key * Pointer to key values for user, NULL if keys couldn't be retrieved. Caller must free
+ */
+gpg_public_key *
+iron_get_user_keys_by_key_id(const char * key_id)
+{
+    gpg_public_key * keys = NULL;
+    char * login = iron_get_user_by_key_id(key_id);
+    if (login != NULL) {
+        keys = malloc(sizeof(gpg_public_key));
+
+        strlcpy(keys->login, login, IRON_MAX_LOGIN_LEN);
+        size_t key_len;
+        bzero(&(keys->rsa_key), sizeof(keys->rsa_key));
+        keys->rsa_key.type = KEY_RSA;
+        keys->rsa_key.ecdsa_nid  = -1;
+        if (read_pubkey_file(login, &(keys->rsa_key), keys->signer_fp, keys->key, &key_len,
+                                keys->fp) < 0) {
+            free(keys);
+            keys = NULL;
+        }
+    }
+
+    return keys;
+}
+
+/**
+ *  Given a login, try to add user's pubkey info to key ID index
+ *
+ *  Assumes the pubkey file for login@host has already been written to ~/.ssh/ironcore/pubkeys.
+ *  Tries to load the file and write the info to the key ID index for the keys from that file.
+ *
+ *  @param login User whose public keys to index
+ *  @return 0 if successful, -1 if unable to index
+ */
+int
+iron_index_user(const char * login)
+{
+    //  We don't add the current user to the index.
+    if (strcmp(login, iron_user_login()) == 0) return 0;
+
+    int retval = -1;
+
+    gpg_public_key keys;
+    strncpy(keys.login, login, IRON_MAX_LOGIN_LEN);
+    keys.login[IRON_MAX_LOGIN_LEN] = 0;
+    size_t key_len;
+    bzero(&(keys.rsa_key), sizeof(keys.rsa_key));
+    keys.rsa_key.type = KEY_RSA;
+    keys.rsa_key.ecdsa_nid  = -1;
+    if (get_gpg_public_keys(login, &(keys.rsa_key), keys.signer_fp, keys.key, &key_len,
+                            keys.fp) == 0) {
+        iron_index_public_keys(&keys);
+        retval = 0;
+    }
+
+    return retval;
+}

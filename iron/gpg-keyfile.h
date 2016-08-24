@@ -27,6 +27,12 @@ extern int      get_gpg_secret_encryption_key(const gpg_public_key * pub_keys, u
 
 extern int      get_gpg_secret_signing_key(Key * rsa_key);
 
+extern int      iron_index_public_keys(gpg_public_key * keys);
+
 extern int      iron_retrieve_ssh_private_key(const char * prompt, Key ** key);
+
+extern char *   iron_get_user_by_key_id(const char * key_id);
+
+extern gpg_public_key * iron_get_user_keys_by_key_id(const char * key_id);
 
 #endif

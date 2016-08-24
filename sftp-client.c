@@ -1316,7 +1316,11 @@ do_download(struct sftp_conn *conn, const char *remote_path,
 	max_req = 1;
 	progress_counter = offset;
 
+#ifdef IRONCORE
+	if (decrypt_flag && showprogress && size != 0)
+#else
 	if (showprogress && size != 0)
+#endif
 		start_progress_meter(remote_path, size, &progress_counter);
 
 	while (num_req > 0 || max_req > 0) {
@@ -1440,7 +1444,11 @@ do_download(struct sftp_conn *conn, const char *remote_path,
 		}
 	}
 
+#ifdef IRONCORE
+	if (decrypt_flag && showprogress && size)
+#else
 	if (showprogress && size)
+#endif
 		stop_progress_meter();
 
 	/* Sanity check */
