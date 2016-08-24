@@ -209,7 +209,9 @@ typedef enum gpg_signature_subpket_type {
 
 
 #define GPG_KEY_VERSION         4       //  Current version for public key and public subkey packets
+#define GPG_SIG_VERSION         4       //  Current version for signature packets
 #define GPG_PKESK_VERSION       3       //  Current version for public key encrypted session key packets
+#define GPG_OPS_VERSION         3       //  Current version for one pass signature packets
 #define GPG_SEIPD_VERSION       1       //  Current version for symmetrically encrypted integrity protected data pkts
 
 #define GPG_MDC_PKT_LEN         22      //  Two byte tag + len, 20 byte SHA1 hash
@@ -223,14 +225,20 @@ typedef struct gpg_packet {
 } gpg_packet;
 
 
-extern int      extract_gpg_tag_and_size(u_char * buf, gpg_tag * tag, ssize_t * size);
+extern int      extract_gpg_tag_and_size(const u_char * buf, gpg_tag * tag, ssize_t * size);
 
-extern void     generate_gpg_public_key_packet(const Key * ssh_key, gpg_packet * pkt);
+extern int      extract_gpg_one_pass_signature_packet(const u_char * buf, int buf_len, u_char * key_id);
+
+extern int      finalize_gpg_data_signature_packet(SHA256_CTX * sig_ctx, Key * rsa_key, gpg_packet * sig_pkt);
 
 extern void     generate_gpg_curve25519_subkey_packet(const u_char * pub_key, size_t pk_len, gpg_packet * pkt);
 
+extern void     generate_gpg_data_signature_packet(const Key * rsa_key, const u_char * key_id, gpg_packet * sig_pkt);
+
 extern int      generate_gpg_literal_data_packet(const char * fname, size_t file_len, time_t mod_time,
                                  u_char * data_pkt_hdr);
+
+extern void     generate_gpg_one_pass_signature_packet(const u_char * key_id, gpg_packet * ops_pkt);
 
 extern void     generate_gpg_pk_uid_signature_packet(const gpg_packet * pubkey_pkt, const gpg_packet * uid_pkt,
                                                      const Key * key, int sig_class, const u_char * key_id,
@@ -238,6 +246,8 @@ extern void     generate_gpg_pk_uid_signature_packet(const gpg_packet * pubkey_p
 
 extern int      generate_gpg_pkesk_packet(const gpg_public_key * key, u_char * sym_key_frame, int frame_len,
                                           gpg_packet * pkt);
+
+extern void     generate_gpg_public_key_packet(const Key * ssh_key, gpg_packet * pkt);
 
 extern void     generate_gpg_seipd_packet_hdr(int data_len, gpg_packet * pkt);
 
@@ -253,6 +263,9 @@ extern int      get_gpg_pkesk_packet(FILE * infile, const char * key_id, u_char 
                                      int * next_len);
 
 extern gpg_packet * get_gpg_pub_key_packet(FILE * infile);
+
+extern int      process_data_signature_packet(const u_char * dec_buf, int buf_len, SHA256_CTX * sig_ctx,
+                                              const u_char * rsa_key_id);
 
 extern int      put_gpg_packet(FILE * outfile, const gpg_packet * msg);
 

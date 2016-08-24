@@ -51,6 +51,7 @@
 
 #ifdef IRONCORE
 #include "iron-common.h"
+#include "iron-gpg.h"
 #endif
 
 /* Clear contents of attributes structure */
@@ -271,25 +272,3 @@ ls_file(const char *name, const struct stat *st, int remote, int si_units)
 	}
 	return xstrdup(buf);
 }
-
-#ifdef IRONCORE
-/**
- *  Check the directory/file name to see if it ends with the .iron sharing suffix.
- *
- *  @param fname Path name to inspect
- *  @return int Offset of suffix in fname, or -1 if fname doesn't end with suffix
- */
-int
-iron_extension_offset(const char * name)
-{
-	int retval = -1;
-	int offset = strlen(name) - IRON_SECURE_FILE_SUFFIX_LEN;
-	if (offset >= 0) {
-		if (strcmp(name + offset, IRON_SECURE_FILE_SUFFIX) == 0) {
-			retval = offset;
-		}
-	}
-
-	return retval;
-}
-#endif

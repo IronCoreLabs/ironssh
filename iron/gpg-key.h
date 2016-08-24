@@ -46,6 +46,8 @@ extern void     compute_gpg_key_fingerprint(const gpg_packet * pubkey_pkt, u_cha
 extern int      encrypt_gpg_key_frame(const u_char * sym_key_frame, int frame_len, const gpg_public_key * key,
                                       u_char * enc_frame, u_char * ephem_pk);
 
+extern int      extract_gpg_rsa_seckey(const u_char * buf, int buf_len, Key * rsa_key);
+
 extern struct sshbuf * encrypt_gpg_sec_parms(const struct sshbuf * buf, const u_char * passphrase, u_char * salt,
                                              u_char * iv, size_t iv_len);
 
@@ -66,6 +68,8 @@ extern struct sshbuf * generate_gpg_curve25519_seckey(const u_char * q, int q_le
                                                       const u_char * passphrase);
 
 extern int      generate_gpg_passphrase_from_rsa(const Key * rsa_key, char * passphrase);
+
+extern void     generate_gpg_rsa_keygrip(const Key * rsa_key, u_char * grip);
 
 extern struct sshbuf * generate_gpg_rsa_seckey(const Key * ssh_key, const u_char * passphrase);
 

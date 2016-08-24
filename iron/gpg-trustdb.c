@@ -21,6 +21,7 @@
 
 #include "openssl/ripemd.h"
 
+#include "iron-gpg.h"
 #include "iron/gpg-internal.h"
 #include "iron/gpg-trustdb.h"
 #include "iron/util.h"
@@ -218,19 +219,18 @@ generate_gpg_trustdb_valid(u_char * rec, const char * uid)
  *
  *  Create the trustdb.gpg file and write it under the specified .ssh directory.
  *
- *  @param ssh_dir Path to the user's .ssh directory (usually under ~<login>)
  *  @param key Public key to add trust
  *  @param key_len Num bytes in key
  *  @param uid String identifying user (typically "Name <emailaddr>")
  *  @return int 0 if successful, negative number if error
  */
 int
-write_gpg_trustdb_file(const char * ssh_dir, const u_char * key, size_t key_len, const char * uid)
+write_gpg_trustdb_file(const u_char * key, size_t key_len, const char * uid)
 {
     int retval = -1;
 
     char file_name[PATH_MAX];
-    snprintf(file_name, PATH_MAX, "%s%s", ssh_dir, GPG_TRUSTDB_FNAME);
+    snprintf(file_name, PATH_MAX, "%s%s", iron_user_ironcore_dir(), GPG_TRUSTDB_FNAME);
     FILE * tdb_fp = fopen(file_name, "w");
     if (tdb_fp != NULL) {
         fchmod(fileno(tdb_fp), S_IRUSR | S_IWUSR);
