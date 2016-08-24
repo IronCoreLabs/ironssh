@@ -318,12 +318,19 @@ distprep: catman-do
 	$(AUTORECONF)
 	-rm -rf autom4te.cache
 
-install: $(CONFIGFILES) $(MANPAGES) $(TARGETS) install-files install-sysconf host-key check-config
+install: $(CONFIGFILES) $(MANPAGES) $(TARGETS) install-files install-iron-files install-sysconf host-key check-config
 install-nokeys: $(CONFIGFILES) $(MANPAGES) $(TARGETS) install-files install-sysconf
 install-nosysconf: $(CONFIGFILES) $(MANPAGES) $(TARGETS) install-files
 
 check-config:
 	-$(DESTDIR)$(sbindir)/sshd -t -f $(DESTDIR)$(sysconfdir)/sshd_config
+
+install-iron-files:
+	$(srcdir)/mkinstalldirs $(DESTDIR)$(bindir)
+	$(srcdir)/mkinstalldirs $(DESTDIR)$(mandir)
+	$(srcdir)/mkinstalldirs $(DESTDIR)$(mandir)/$(mansubdir)1
+	$(INSTALL) -m 0755 $(STRIP_OPT) ironsftp$(EXEEXT) $(DESTDIR)$(bindir)/ironsftp$(EXEEXT)
+#	$(INSTALL) -m 644 ironsftp.1.out $(DESTDIR)$(mandir)/$(mansubdir)1/ironsftp.1
 
 install-files:
 	$(srcdir)/mkinstalldirs $(DESTDIR)$(bindir)
