@@ -510,11 +510,11 @@ populate_signature_header(struct sshbuf * body, int sig_class, gpg_tag pubkey_ta
 static void
 add_signature_trailer(SHA256_CTX * ctx, int len)
 {
-	u_char trailer[6];
-	trailer[0] = GPG_SIG_VERSION;
-	trailer[1] = 0xff;
-	iron_int_to_buf(len, trailer + 2);
-	SHA256_Update(ctx, trailer, 6);
+    u_char trailer[6];
+    trailer[0] = GPG_SIG_VERSION;
+    trailer[1] = 0xff;
+    iron_int_to_buf(len, trailer + 2);
+    SHA256_Update(ctx, trailer, 6);
 }
 
 /**
@@ -558,7 +558,7 @@ compute_signature_hash(const gpg_packet * pubkey_pkt, const gpg_packet * uid_pkt
 
     /* Now add the first part of the signature packet, through the hashed data section. */
     SHA256_Update(&ctx, sshbuf_ptr(sig_pkt->data), sshbuf_len(sig_pkt->data));
-	add_signature_trailer(&ctx, sshbuf_len(sig_pkt->data));
+    add_signature_trailer(&ctx, sshbuf_len(sig_pkt->data));
     SHA256_Final(hash, &ctx);
 }
 
@@ -933,7 +933,7 @@ get_gpg_pkesk_packet(FILE * infile, const char * key_id, u_char * msg, gpg_tag *
 
 //  The OPS packet has a fixed length - one byte each for the version, sig class, hash algo, PK
 //  algo, and last flag, and 8 bytes for the key ID.  Total of 13 bytes.
-#define ONE_PASS_SIG_LEN	13
+#define ONE_PASS_SIG_LEN    13
 
 /**
  *  Process One Pass Signature (OPS) packet
@@ -948,18 +948,18 @@ get_gpg_pkesk_packet(FILE * infile, const char * key_id, u_char * msg, gpg_tag *
 int
 extract_gpg_one_pass_signature_packet(const u_char * buf, int buf_len, u_char * key_id)
 {
-	if (buf_len < ONE_PASS_SIG_LEN) return -1;
+    if (buf_len < ONE_PASS_SIG_LEN) return -1;
 
-	const u_char * ptr = buf;
-	if (*(ptr++) != GPG_OPS_VERSION) return -2;
-	if (*(ptr++) != GPG_SIGCLASS_BINARY_DOC) return -3;
-	if (*(ptr++) != GPG_HASHALGO_SHA256) return -4;
-	if (*(ptr++) != GPG_PKALGO_RSA_ES) return -5;
-	memcpy(key_id, ptr, GPG_KEY_ID_LEN);
-	ptr += GPG_KEY_ID_LEN;
-	if (*(ptr++) != 1) return -6;			//  Last OPS flag should always be set
+    const u_char * ptr = buf;
+    if (*(ptr++) != GPG_OPS_VERSION) return -2;
+    if (*(ptr++) != GPG_SIGCLASS_BINARY_DOC) return -3;
+    if (*(ptr++) != GPG_HASHALGO_SHA256) return -4;
+    if (*(ptr++) != GPG_PKALGO_RSA_ES) return -5;
+    memcpy(key_id, ptr, GPG_KEY_ID_LEN);
+    ptr += GPG_KEY_ID_LEN;
+    if (*(ptr++) != 1) return -6;           //  Last OPS flag should always be set
 
-	return ONE_PASS_SIG_LEN;
+    return ONE_PASS_SIG_LEN;
 }
 
 /**
@@ -971,15 +971,15 @@ extract_gpg_one_pass_signature_packet(const u_char * buf, int buf_len, u_char * 
 void
 generate_gpg_one_pass_signature_packet(const u_char * key_id, gpg_packet * ops_pkt)
 {
-	ops_pkt->tag = GPG_TAG_ONE_PASS_SIGNATURE;
-	ops_pkt->data = sshbuf_new();
-	sshbuf_put_u8(ops_pkt->data, GPG_OPS_VERSION);
-	sshbuf_put_u8(ops_pkt->data, GPG_SIGCLASS_BINARY_DOC);
-	sshbuf_put_u8(ops_pkt->data, GPG_HASHALGO_SHA256);
-	sshbuf_put_u8(ops_pkt->data, GPG_PKALGO_RSA_ES);
-	sshbuf_put(ops_pkt->data, key_id, GPG_KEY_ID_LEN);
-	sshbuf_put_u8(ops_pkt->data, 1);		//  Last flag - we always include just one signature
-	ops_pkt->len = sshbuf_len(ops_pkt->data);
+    ops_pkt->tag = GPG_TAG_ONE_PASS_SIGNATURE;
+    ops_pkt->data = sshbuf_new();
+    sshbuf_put_u8(ops_pkt->data, GPG_OPS_VERSION);
+    sshbuf_put_u8(ops_pkt->data, GPG_SIGCLASS_BINARY_DOC);
+    sshbuf_put_u8(ops_pkt->data, GPG_HASHALGO_SHA256);
+    sshbuf_put_u8(ops_pkt->data, GPG_PKALGO_RSA_ES);
+    sshbuf_put(ops_pkt->data, key_id, GPG_KEY_ID_LEN);
+    sshbuf_put_u8(ops_pkt->data, 1);        //  Last flag - we always include just one signature
+    ops_pkt->len = sshbuf_len(ops_pkt->data);
 }
 
 /**
@@ -995,27 +995,27 @@ generate_gpg_one_pass_signature_packet(const u_char * key_id, gpg_packet * ops_p
 void
 generate_gpg_data_signature_packet(const Key * rsa_key, const u_char * key_id, gpg_packet * sig_pkt)
 {
-	sig_pkt->tag = GPG_TAG_SIGNATURE;
-	sig_pkt->data = sshbuf_new();
-	sshbuf_put_u8(sig_pkt->data, GPG_SIG_VERSION);
-	sshbuf_put_u8(sig_pkt->data, GPG_SIGCLASS_BINARY_DOC);
-	sshbuf_put_u8(sig_pkt->data, GPG_PKALGO_RSA_ES);
-	sshbuf_put_u8(sig_pkt->data, GPG_HASHALGO_SHA256);
-	sshbuf_put_u16(sig_pkt->data, 6);				//  Length of hashed subpackets
-	sshbuf_put_u8(sig_pkt->data, 5);				//  Length of signature creation time subpacket
-	sshbuf_put_u8(sig_pkt->data, GPG_SIG_SUBPKT_SIGNATURE_CREATION_TIME);
-	sshbuf_put_u32(sig_pkt->data, iron_gpg_now());
-	sshbuf_put_u16(sig_pkt->data, GPG_KEY_ID_LEN + 2);	//  Length of unhashed subpackets
-	sshbuf_put_u8(sig_pkt->data, GPG_KEY_ID_LEN + 1);	//  Length of issuer subpacket
-	sshbuf_put_u8(sig_pkt->data, GPG_SIG_SUBPKT_ISSUER);
-	sshbuf_put(sig_pkt->data, key_id, GPG_KEY_ID_LEN);
+    sig_pkt->tag = GPG_TAG_SIGNATURE;
+    sig_pkt->data = sshbuf_new();
+    sshbuf_put_u8(sig_pkt->data, GPG_SIG_VERSION);
+    sshbuf_put_u8(sig_pkt->data, GPG_SIGCLASS_BINARY_DOC);
+    sshbuf_put_u8(sig_pkt->data, GPG_PKALGO_RSA_ES);
+    sshbuf_put_u8(sig_pkt->data, GPG_HASHALGO_SHA256);
+    sshbuf_put_u16(sig_pkt->data, 6);               //  Length of hashed subpackets
+    sshbuf_put_u8(sig_pkt->data, 5);                //  Length of signature creation time subpacket
+    sshbuf_put_u8(sig_pkt->data, GPG_SIG_SUBPKT_SIGNATURE_CREATION_TIME);
+    sshbuf_put_u32(sig_pkt->data, iron_gpg_now());
+    sshbuf_put_u16(sig_pkt->data, GPG_KEY_ID_LEN + 2);  //  Length of unhashed subpackets
+    sshbuf_put_u8(sig_pkt->data, GPG_KEY_ID_LEN + 1);   //  Length of issuer subpacket
+    sshbuf_put_u8(sig_pkt->data, GPG_SIG_SUBPKT_ISSUER);
+    sshbuf_put(sig_pkt->data, key_id, GPG_KEY_ID_LEN);
 
-	//  This is all we can fill in for now. The rest of the packet will be two bytes that are the first
-	//  two bytes of the hash that is being signed, then the signature. The signature length is the same
-	//  as the RSA key length. We will set the length to include that data now, but we will populate it
-	//  later.
-	size_t rsa_len = RSA_size(rsa_key->rsa);
-	sig_pkt->len = sshbuf_len(sig_pkt->data) + 2 /* hash bytes */ + 2 /* MPI length */ + rsa_len;
+    //  This is all we can fill in for now. The rest of the packet will be two bytes that are the first
+    //  two bytes of the hash that is being signed, then the signature. The signature length is the same
+    //  as the RSA key length. We will set the length to include that data now, but we will populate it
+    //  later.
+    size_t rsa_len = RSA_size(rsa_key->rsa);
+    sig_pkt->len = sshbuf_len(sig_pkt->data) + 2 /* hash bytes */ + 2 /* MPI length */ + rsa_len;
 }
 
 /**
@@ -1031,38 +1031,38 @@ generate_gpg_data_signature_packet(const Key * rsa_key, const u_char * key_id, g
 int
 finalize_gpg_data_signature_packet(SHA256_CTX * sig_ctx, Key * rsa_key, gpg_packet * sig_pkt)
 {
-	int retval = -1;
+    int retval = -1;
 
-	//  Determine the length of the signature packet through the hashed data section. The body starts
-	//  with four octets (version, signature class, PK algorithm, and hash algorithm), then the hashed
-	//  subpacket length.
-	const u_char * ptr = sshbuf_ptr(sig_pkt->data) + 4;
-	int len = (*ptr << 8) + *(ptr + 1);
-	len += 6;		//  For the initial bytes, plus the two-byte hashed subpacket length
+    //  Determine the length of the signature packet through the hashed data section. The body starts
+    //  with four octets (version, signature class, PK algorithm, and hash algorithm), then the hashed
+    //  subpacket length.
+    const u_char * ptr = sshbuf_ptr(sig_pkt->data) + 4;
+    int len = (*ptr << 8) + *(ptr + 1);
+    len += 6;       //  For the initial bytes, plus the two-byte hashed subpacket length
 
-	SHA256_Update(sig_ctx, sshbuf_ptr(sig_pkt->data), len);
-	add_signature_trailer(sig_ctx, len);
+    SHA256_Update(sig_ctx, sshbuf_ptr(sig_pkt->data), len);
+    add_signature_trailer(sig_ctx, len);
 
-	u_char sig_hash[SHA256_DIGEST_LENGTH];
-	SHA256_Final(sig_hash, sig_ctx);
+    u_char sig_hash[SHA256_DIGEST_LENGTH];
+    SHA256_Final(sig_hash, sig_ctx);
 
     //  The first two bytes of the hash are copied into the signature to allow a quick check for corruption
     //  before actually verifying the signature.
-	sshbuf_put_u8(sig_pkt->data, sig_hash[0]);
-	sshbuf_put_u8(sig_pkt->data, sig_hash[1]);
+    sshbuf_put_u8(sig_pkt->data, sig_hash[0]);
+    sshbuf_put_u8(sig_pkt->data, sig_hash[1]);
 
-	if (get_gpg_secret_signing_key(rsa_key) == 0) {
-		BIGNUM * sig = iron_compute_rsa_signature(sig_hash, SHA256_DIGEST_LENGTH, rsa_key);
-		iron_put_bignum(sig_pkt->data, sig);
-		BN_clear_free(sig);
-		if ((int)sshbuf_len(sig_pkt->data) == (int)sig_pkt->len) {
-			retval = 0;
-		} else {
-			error("Internal error finalizing signature packet.");
-		}
-	}
+    if (get_gpg_secret_signing_key(rsa_key) == 0) {
+        BIGNUM * sig = iron_compute_rsa_signature(sig_hash, SHA256_DIGEST_LENGTH, rsa_key);
+        iron_put_bignum(sig_pkt->data, sig);
+        BN_clear_free(sig);
+        if ((int)sshbuf_len(sig_pkt->data) == (int)sig_pkt->len) {
+            retval = 0;
+        } else {
+            error("Internal error finalizing signature packet.");
+        }
+    }
 
-	return retval;
+    return retval;
 }
 
 /**
@@ -1081,70 +1081,70 @@ finalize_gpg_data_signature_packet(SHA256_CTX * sig_ctx, Key * rsa_key, gpg_pack
 int
 process_data_signature_packet(const u_char * dec_buf, int buf_len, SHA256_CTX * sig_ctx, const u_char * rsa_key_id)
 {
-	gpg_tag tag;
-	size_t len;
-	int sig_hdr_len = extract_gpg_tag_and_size(dec_buf, &tag, &len);
-	if (sig_hdr_len < 0 || buf_len < (int) len) return -1;
-	if (tag != GPG_TAG_SIGNATURE) return -2;
+    gpg_tag tag;
+    size_t len;
+    int sig_hdr_len = extract_gpg_tag_and_size(dec_buf, &tag, &len);
+    if (sig_hdr_len < 0 || buf_len < (int) len) return -1;
+    if (tag != GPG_TAG_SIGNATURE) return -2;
 
-	const u_char * dptr = dec_buf + sig_hdr_len;
-	if (*(dptr++) != GPG_SIG_VERSION) return -3;
-	if (*(dptr++) != GPG_SIGCLASS_BINARY_DOC) return -4;
-	if (*(dptr++) != GPG_PKALGO_RSA_ES) return -5;
-	if (*(dptr++) != GPG_HASHALGO_SHA256) return -6;
-	int hashed_len = (*dptr << 8) + *(dptr + 1);
-	dptr += 2;
-	if (hashed_len != 6 || *(dptr++) != 5) return -7;
-	if (*(dptr++) != GPG_SIG_SUBPKT_SIGNATURE_CREATION_TIME) return -8;
-	u_int32_t create_ts = iron_buf_to_int(dptr);
-	dptr += 4;  //  Skip creation time subpacket
+    const u_char * dptr = dec_buf + sig_hdr_len;
+    if (*(dptr++) != GPG_SIG_VERSION) return -3;
+    if (*(dptr++) != GPG_SIGCLASS_BINARY_DOC) return -4;
+    if (*(dptr++) != GPG_PKALGO_RSA_ES) return -5;
+    if (*(dptr++) != GPG_HASHALGO_SHA256) return -6;
+    int hashed_len = (*dptr << 8) + *(dptr + 1);
+    dptr += 2;
+    if (hashed_len != 6 || *(dptr++) != 5) return -7;
+    if (*(dptr++) != GPG_SIG_SUBPKT_SIGNATURE_CREATION_TIME) return -8;
+    // u_int32_t create_ts = iron_buf_to_int(dptr);  Not currently using, so just skip over.
+    dptr += 4;  //  Skip creation time subpacket
 
-	//  Hash includes all of the signature packet after the tag/len header through the end of the hashed
-	//  subpackets.
-	hashed_len = dptr - dec_buf - sig_hdr_len;
-	SHA256_Update(sig_ctx, dec_buf + sig_hdr_len, hashed_len);
-	add_signature_trailer(sig_ctx, hashed_len);
-	u_char hash[SHA256_DIGEST_LENGTH];
-	SHA256_Final(hash, sig_ctx);
+    //  Hash includes all of the signature packet after the tag/len header through the end of the hashed
+    //  subpackets.
+    hashed_len = dptr - dec_buf - sig_hdr_len;
+    SHA256_Update(sig_ctx, dec_buf + sig_hdr_len, hashed_len);
+    add_signature_trailer(sig_ctx, hashed_len);
+    u_char hash[SHA256_DIGEST_LENGTH];
+    SHA256_Final(hash, sig_ctx);
 
-	//  Finish verifying unhashed subpackets.
-	int unhashed_len = (*dptr << 8) + *(dptr + 1);
-	dptr += 2;
-	if (unhashed_len != GPG_KEY_ID_LEN + 2 || *(dptr++) != GPG_KEY_ID_LEN + 1) return -9;
-	if (*(dptr++) != GPG_SIG_SUBPKT_ISSUER) return -10;
+    //  Finish verifying unhashed subpackets.
+    int unhashed_len = (*dptr << 8) + *(dptr + 1);
+    dptr += 2;
+    if (unhashed_len != GPG_KEY_ID_LEN + 2 || *(dptr++) != GPG_KEY_ID_LEN + 1) return -9;
+    if (*(dptr++) != GPG_SIG_SUBPKT_ISSUER) return -10;
 
-	u_char key_id[GPG_KEY_ID_LEN];
-	memcpy(key_id, dptr, GPG_KEY_ID_LEN);
-	dptr += GPG_KEY_ID_LEN;
+    u_char key_id[GPG_KEY_ID_LEN];
+    memcpy(key_id, dptr, GPG_KEY_ID_LEN);
+    dptr += GPG_KEY_ID_LEN;
 
-	if (memcmp(rsa_key_id, key_id, GPG_KEY_ID_LEN) != 0) return -11;
+    if (memcmp(rsa_key_id, key_id, GPG_KEY_ID_LEN) != 0) return -11;
 
-	//  Now we are to the actual signature. Attempt to find the public RSA signing key corresponding to
-	//  the key ID from the OPS/Signature packets, sign the hash, and compare to the signature in the packet.
-	char hex_id[2 * GPG_KEY_ID_LEN + 1];
-	iron_hex2str(key_id, GPG_KEY_ID_LEN, hex_id);
+    //  Now we are to the actual signature. Attempt to find the public RSA signing key corresponding to
+    //  the key ID from the OPS/Signature packets, sign the hash, and compare to the signature in the packet.
+    char hex_id[2 * GPG_KEY_ID_LEN + 1];
+    iron_hex2str(key_id, GPG_KEY_ID_LEN, hex_id);
 
-	//  Quick check of the first two bytes of the hash.
-	if (*dptr != hash[0] || *(dptr + 1) != hash[1]) return -12;
-	dptr += 2;
+    //  Quick check of the first two bytes of the hash.
+    if (*dptr != hash[0] || *(dptr + 1) != hash[1]) return -12;
+    dptr += 2;
 
-	const gpg_public_key * signer_keys = iron_get_recipient_keys_by_key_id(key_id);
-	if (signer_keys != NULL) {
-		int sig_len = (*dptr << 8) + *(dptr + 1);	//  Size in bits
-		dptr += 2;
-		sig_len = (sig_len + 7) / 8;			//  Convert to bytes
+    const gpg_public_key * signer_keys = iron_get_recipient_keys_by_key_id(key_id);
+    if (signer_keys != NULL) {
+        int sig_len = (*dptr << 8) + *(dptr + 1);   //  Size in bits
+        dptr += 2;
+        sig_len = (sig_len + 7) / 8;            //  Convert to bytes
 
-		if (RSA_verify(NID_sha256, hash, SHA256_DIGEST_LENGTH, dptr, sig_len, signer_keys->rsa_key.rsa) != 1) {
-			error("ERROR: message was signed by user %s, key ID %s,\n       but signature is not correct.",
-				  signer_keys->login, hex_id);
-			return -13;
-		} else {
-			logit("Message was signed by user %s, key ID %s.", signer_keys->login, hex_id);
-		}
-	} else {
-		logit("WARNING: unable to identify owner of key ID %s - unable to verify signature.", hex_id);
-	}
+        if (RSA_verify(NID_sha256, hash, SHA256_DIGEST_LENGTH, dptr, sig_len, signer_keys->rsa_key.rsa) != 1) {
+            error("ERROR: message was signed by user %s, key ID %s,\n       but signature is not correct.",
+                  signer_keys->login, hex_id);
+            return -13;
+        } else {
+            logit("Message was signed by user %s, key ID %s.", signer_keys->login, hex_id);
+        }
+    } else {
+        logit("WARNING: unable to identify owner of key ID %s - unable to verify signature.", hex_id);
+    }
 
-	return len + sig_hdr_len;
+    return len + sig_hdr_len;
 }
 

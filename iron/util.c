@@ -117,12 +117,12 @@ iron_int_to_buf(int val, u_char * buf)
 u_int32_t
 iron_buf_to_int(const u_char * buf)
 {
-	unsigned int len = 0;
-	for (int i = 0; i < 4; i++) {
-		len = (len << 8) + buf[i];
-	}
+    unsigned int len = 0;
+    for (int i = 0; i < 4; i++) {
+        len = (len << 8) + buf[i];
+    }
 
-	return len;
+    return len;
 }
 
 /**
@@ -262,15 +262,15 @@ iron_compute_sha1_hash_chars(const u_char * bstr, int bstr_len, u_char * hash)
  */
 int
 iron_hashcrypt(SHA_CTX * mdc_ctx, SHA256_CTX * sig_ctx, EVP_CIPHER_CTX * aes_ctx, const u_char * input,
-	   	  int size, u_char * output)
+          int size, u_char * output)
 {
-	int num_written;
-	SHA1_Update(mdc_ctx, input, size);
-	if (sig_ctx != NULL) {
-		SHA256_Update(sig_ctx, input, size);
-	}
-	if (EVP_EncryptUpdate(aes_ctx, output, &num_written, input, size)) return num_written;
-	else return -1;
+    int num_written;
+    SHA1_Update(mdc_ctx, input, size);
+    if (sig_ctx != NULL) {
+        SHA256_Update(sig_ctx, input, size);
+    }
+    if (EVP_EncryptUpdate(aes_ctx, output, &num_written, input, size)) return num_written;
+    else return -1;
 }
 
 

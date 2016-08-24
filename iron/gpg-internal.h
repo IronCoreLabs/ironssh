@@ -21,10 +21,10 @@
 
 //  These key-related constants are used in files with intertwined dependencies, so they are pulled into here
 //  to untangle.
-#define GPG_MAX_KEY_SIZE		512             //  # bytes a secret or public key can occupy
-#define GPG_KEY_FP_LEN			20              //  Bytes in key fingerprint - same as the SHA hash length
-#define GPG_KEY_ID_LEN			8               //  Bytes in key ID - the last 8 bytes of the key fingerprint
-#define GPG_KEY_ID_OFFSET		(GPG_KEY_FP_LEN - GPG_KEY_ID_LEN)       //  Offset from start of fingerprint for ID
+#define GPG_MAX_KEY_SIZE        512             //  # bytes a secret or public key can occupy
+#define GPG_KEY_FP_LEN          20              //  Bytes in key fingerprint - same as the SHA hash length
+#define GPG_KEY_ID_LEN          8               //  Bytes in key ID - the last 8 bytes of the key fingerprint
+#define GPG_KEY_ID_OFFSET       (GPG_KEY_FP_LEN - GPG_KEY_ID_LEN)       //  Offset from start of fingerprint for ID
 
 //  If you have a key fingerprint, this macro gives you a pointer to the key ID that corresponds to the FP
 #define GPG_KEY_ID_FROM_FP(fp) ((fp) + GPG_KEY_ID_OFFSET)
@@ -32,7 +32,7 @@
 #define IRONCORE_SUBDIR         "ironcore/"     //  subdir of ~/.ssh that holds all IronCore files
 
 
-extern int			iron_initialize(void);
-extern u_int32_t	iron_gpg_now();
+extern int          iron_initialize(void);
+extern u_int32_t    iron_gpg_now();
 
 #endif

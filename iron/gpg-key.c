@@ -194,21 +194,21 @@ clamp_and_reverse_seckey(u_char * sk)
 void
 generate_gpg_rsa_keygrip(const Key * rsa_key, u_char * grip)
 {
-	u_char   tmp_n[2 * GPG_MAX_KEY_SIZE + 1];
-	u_char * tmp_ptr;
+    u_char   tmp_n[2 * GPG_MAX_KEY_SIZE + 1];
+    u_char * tmp_ptr;
 
-	//  Extract the public key parameter n from the bignum, prepend a zero if necessary to make
-	//  sure the high bit isn't set, then hash.
-	tmp_n[0] = 0x00;
-	int n_len = BN_bn2bin(rsa_key->rsa->n, tmp_n + 1);
-	if (tmp_n[1] > 0x7f) {
-		n_len++;
-		tmp_ptr = tmp_n;
-	} else {
-		tmp_ptr = tmp_n + 1;
-	}
+    //  Extract the public key parameter n from the bignum, prepend a zero if necessary to make
+    //  sure the high bit isn't set, then hash.
+    tmp_n[0] = 0x00;
+    int n_len = BN_bn2bin(rsa_key->rsa->n, tmp_n + 1);
+    if (tmp_n[1] > 0x7f) {
+        n_len++;
+        tmp_ptr = tmp_n;
+    } else {
+        tmp_ptr = tmp_n + 1;
+    }
 
-	iron_compute_sha1_hash_chars(tmp_ptr, n_len, grip);
+    iron_compute_sha1_hash_chars(tmp_ptr, n_len, grip);
 }
 
 /**
@@ -411,10 +411,10 @@ generate_gpg_passphrase_from_rsa(const Key * rsa_key, char * passphrase)
 
     if (signature != NULL) {
         u_char * sptr = signature;
-		u_int32_t len = iron_buf_to_int(sptr);
-		sptr += 4 + len;
-		len = iron_buf_to_int(sptr);
-		sptr += 4;
+        u_int32_t len = iron_buf_to_int(sptr);
+        sptr += 4 + len;
+        len = iron_buf_to_int(sptr);
+        sptr += 4;
         if ((sig_len - len) != (size_t) (sptr - signature)) {
             error("Unrecognized format for RSA signature. Unable to generate passphrase.");
             retval = -5;
@@ -846,7 +846,7 @@ generate_gpg_rsa_pub_parms(const Key * ssh_key)
 static void
 put_parm_in_sexpr(struct sshbuf * buf, char parm_name, BIGNUM * bn)
 {
-	u_char tmp[2 * GPG_MAX_KEY_SIZE];
+    u_char tmp[2 * GPG_MAX_KEY_SIZE];
     int len = BN_bn2bin(bn, tmp);
     sshbuf_put(buf, "(1:", 3);
     sshbuf_put_u8(buf, parm_name);
@@ -868,29 +868,29 @@ put_parm_in_sexpr(struct sshbuf * buf, char parm_name, BIGNUM * bn)
 static int
 get_parm_from_sexpr(const u_char * buf, char parm_name, BIGNUM ** bn)
 {
-	int retval = -1;
-	u_char tmp[8];
-	const u_char * ptr = buf;
+    int retval = -1;
+    u_char tmp[8];
+    const u_char * ptr = buf;
 
-	sprintf(tmp, "(1:%c", parm_name);
-	if (strncmp(ptr, tmp, 4) == 0) {
-		ptr += 4;
-		errno = 0;
-		int bn_len = strtol(ptr, (char **) &ptr, 10);
-		ptr++;  // Skip ':'
-		if (errno != EINVAL && errno != ERANGE && bn_len > 0) {
-			*bn = BN_new();
-			if (*bn != NULL) {
-				BN_bin2bn(ptr, bn_len, *bn);
-				ptr += bn_len;
-				if (*(ptr++) == ')') {
-					retval = ptr - buf;
-				}
-			}
-		}
-	}
+    sprintf(tmp, "(1:%c", parm_name);
+    if (strncmp(ptr, tmp, 4) == 0) {
+        ptr += 4;
+        errno = 0;
+        int bn_len = strtol(ptr, (char **) &ptr, 10);
+        ptr++;  // Skip ':'
+        if (errno != EINVAL && errno != ERANGE && bn_len > 0) {
+            *bn = BN_new();
+            if (*bn != NULL) {
+                BN_bin2bn(ptr, bn_len, *bn);
+                ptr += bn_len;
+                if (*(ptr++) == ')') {
+                    retval = ptr - buf;
+                }
+            }
+        }
+    }
 
-	return retval;
+    return retval;
 }
 
 /**
@@ -936,32 +936,32 @@ generate_gpg_rsa_sec_parms(const Key * ssh_key)
  */
 static u_char *
 decrypt_gpg_sec_parms(const u_char * enc_data, int len, const Key * rsa_pubkey, const u_char * salt, 
-					  int hash_bytes, const u_char * iv)
+                      int hash_bytes, const u_char * iv)
 {
-	char * output = NULL;
+    char * output = NULL;
 
-	//  First, generate the passphrase from the RSA key and generate the symmetric key from that.
-	u_char sym_key[AES128_KEY_BYTES];
-	char   passphrase[PPHRASE_LEN];
+    //  First, generate the passphrase from the RSA key and generate the symmetric key from that.
+    u_char sym_key[AES128_KEY_BYTES];
+    char   passphrase[PPHRASE_LEN];
 
-	if (generate_gpg_passphrase_from_rsa(rsa_pubkey, passphrase) == 0) {
-		compute_gpg_s2k_key(passphrase, sizeof(sym_key), salt, hash_bytes, sym_key);
+    if (generate_gpg_passphrase_from_rsa(rsa_pubkey, passphrase) == 0) {
+        compute_gpg_s2k_key(passphrase, sizeof(sym_key), salt, hash_bytes, sym_key);
 
-		struct sshcipher_ctx ciphercontext;
-		const struct sshcipher * cipher = cipher_by_name("aes128-cbc");
-		if (cipher_init(&ciphercontext, cipher, sym_key, sizeof(sym_key), iv, GPG_SECKEY_IV_BYTES,
-				   		CIPHER_DECRYPT) == 0) {
-			output = malloc(len);
-			if (output != NULL) {
-				if (cipher_crypt(&ciphercontext, 0, output, enc_data, len, 0, 0) != 0) {
-					free(output);
-					output = NULL;
-				}
-			}
-		}
-	}
+        struct sshcipher_ctx ciphercontext;
+        const struct sshcipher * cipher = cipher_by_name("aes128-cbc");
+        if (cipher_init(&ciphercontext, cipher, sym_key, sizeof(sym_key), iv, GPG_SECKEY_IV_BYTES,
+                        CIPHER_DECRYPT) == 0) {
+            output = malloc(len);
+            if (output != NULL) {
+                if (cipher_crypt(&ciphercontext, 0, output, enc_data, len, 0, 0) != 0) {
+                    free(output);
+                    output = NULL;
+                }
+            }
+        }
+    }
 
-	return output;
+    return output;
 }
 
 /**
@@ -979,78 +979,78 @@ decrypt_gpg_sec_parms(const u_char * enc_data, int len, const Key * rsa_pubkey, 
  */
 static u_char *
 extract_gpg_sec_parms(char pub_parm_name, const char * key_name, const u_char * buf, int buf_len,
-					  const Key * rsa_pubkey)
+                      const Key * rsa_pubkey)
 {
-	u_char * sec_parms = NULL;
+    u_char * sec_parms = NULL;
 
-	//  Need to find the start of the secret key params in the S-expression. Complicated by the fact
-	//  that the public key might contain binary data, so we need to skip over it to find the secret
-	//  key. We do rely on the fact that the first pub_parm_name character in the string should be the
-	//  start of the public key, and everything before that is ASCII. (Works for both n, for RSA keys,
-	//  and q, for cv25519 keys.)
-	u_char * ptr = memchr(buf, pub_parm_name, buf_len);
-	if (ptr != NULL) {
-		ptr++;
-		errno = 0;
-		int len = strtol(ptr, (char **) &ptr, 10);
-		ptr++;  // Skip ':'
-		if (errno == EINVAL || errno == ERANGE || len <= 0 || len > GPG_MAX_KEY_SIZE) goto out;
-		ptr += len;
+    //  Need to find the start of the secret key params in the S-expression. Complicated by the fact
+    //  that the public key might contain binary data, so we need to skip over it to find the secret
+    //  key. We do rely on the fact that the first pub_parm_name character in the string should be the
+    //  start of the public key, and everything before that is ASCII. (Works for both n, for RSA keys,
+    //  and q, for cv25519 keys.)
+    u_char * ptr = memchr(buf, pub_parm_name, buf_len);
+    if (ptr != NULL) {
+        ptr++;
+        errno = 0;
+        int len = strtol(ptr, (char **) &ptr, 10);
+        ptr++;  // Skip ':'
+        if (errno == EINVAL || errno == ERANGE || len <= 0 || len > GPG_MAX_KEY_SIZE) goto out;
+        ptr += len;
 
-		//  If it's a GPG key, there is a second public parameter, e, to skip
-		if (pub_parm_name == 'n') {
-			if (strncmp(ptr, ")(1:e", 5) != 0) goto out;
-			ptr += 5;
-			errno = 0;
-			int len = strtol(ptr, (char **) &ptr, 10);
-			ptr++;  // Skip ':'
-			if (errno == EINVAL || errno == ERANGE || len <= 0 || len > GPG_MAX_KEY_SIZE) goto out;
-			ptr += len;
-		}
+        //  If it's a GPG key, there is a second public parameter, e, to skip
+        if (pub_parm_name == 'n') {
+            if (strncmp(ptr, ")(1:e", 5) != 0) goto out;
+            ptr += 5;
+            errno = 0;
+            int len = strtol(ptr, (char **) &ptr, 10);
+            ptr++;  // Skip ':'
+            if (errno == EINVAL || errno == ERANGE || len <= 0 || len > GPG_MAX_KEY_SIZE) goto out;
+            ptr += len;
+        }
 
-		if (*(ptr++) != ')' || (strncmp(ptr, GPG_SEC_PARM_PREFIX, strlen(GPG_SEC_PARM_PREFIX)) != 0)) goto out;
-		ptr += strlen(GPG_SEC_PARM_PREFIX);
+        if (*(ptr++) != ')' || (strncmp(ptr, GPG_SEC_PARM_PREFIX, strlen(GPG_SEC_PARM_PREFIX)) != 0)) goto out;
+        ptr += strlen(GPG_SEC_PARM_PREFIX);
 
-		//  Next grab the 8 byte salt for the SHA1 hash
-		u_char salt[S2K_SALT_BYTES];
-		memcpy(salt, ptr, sizeof(salt));
-		ptr += sizeof(salt);
+        //  Next grab the 8 byte salt for the SHA1 hash
+        u_char salt[S2K_SALT_BYTES];
+        memcpy(salt, ptr, sizeof(salt));
+        ptr += sizeof(salt);
 
-		//  Get the hash byte count - skip the "8:" preceding
-		ptr += 2;
-		errno = 0;
-		int hash_bytes = strtol(ptr, (char **) &ptr, 10);
-		if (errno == EINVAL || errno == ERANGE || strncmp(ptr, ")16:", 4) != 0) goto out;
-		ptr += 4;
+        //  Get the hash byte count - skip the "8:" preceding
+        ptr += 2;
+        errno = 0;
+        int hash_bytes = strtol(ptr, (char **) &ptr, 10);
+        if (errno == EINVAL || errno == ERANGE || strncmp(ptr, ")16:", 4) != 0) goto out;
+        ptr += 4;
 
-		//  Grab the 16-byte IV for the encrypted key
-		u_char iv[GPG_SECKEY_IV_BYTES];
-		memcpy(iv, ptr, sizeof(iv));
-		ptr += sizeof(iv);
+        //  Grab the 16-byte IV for the encrypted key
+        u_char iv[GPG_SECKEY_IV_BYTES];
+        memcpy(iv, ptr, sizeof(iv));
+        ptr += sizeof(iv);
 
-		if (*(ptr++) != ')') goto out;
-		errno = 0;
-		len = strtol(ptr, (char **) &ptr, 10);
-		ptr++;  // Skip ':'
-		if (errno == EINVAL || errno == ERANGE || ((ptr - buf) + len) >= buf_len - 1) goto out;
+        if (*(ptr++) != ')') goto out;
+        errno = 0;
+        len = strtol(ptr, (char **) &ptr, 10);
+        ptr++;  // Skip ':'
+        if (errno == EINVAL || errno == ERANGE || ((ptr - buf) + len) >= buf_len - 1) goto out;
 
-		//  ptr now points to the encrypted security parameters. Take that data, along with the necessary info
-		//  to decrypt, and get the secret parameters decrypted. The decrypted byte array should be as long as
-		//  the encrypted one.
-		sec_parms = decrypt_gpg_sec_parms(ptr, len, rsa_pubkey, salt, hash_bytes, iv);
+        //  ptr now points to the encrypted security parameters. Take that data, along with the necessary info
+        //  to decrypt, and get the secret parameters decrypted. The decrypted byte array should be as long as
+        //  the encrypted one.
+        sec_parms = decrypt_gpg_sec_parms(ptr, len, rsa_pubkey, salt, hash_bytes, iv);
 
-		ptr += len;
-		if (*ptr != ')') {
-			free(sec_parms);
-			sec_parms = NULL;
-		}
-	}
+        ptr += len;
+        if (*ptr != ')') {
+            free(sec_parms);
+            sec_parms = NULL;
+        }
+    }
 
 out:
-	if (sec_parms == NULL) {
-		error("Invalid format - unable to retrieve %s secret key.", key_name);
-	}
-	return sec_parms;
+    if (sec_parms == NULL) {
+        error("Invalid format - unable to retrieve %s secret key.", key_name);
+    }
+    return sec_parms;
 }
 
 /**
@@ -1065,42 +1065,42 @@ out:
 int
 extract_gpg_rsa_seckey(const u_char * buf, int buf_len, Key * rsa_key)
 {
-	int retval = -1;
+    int retval = -1;
 
-	//  Need to find the start of the secret key params in the S-expression. Complicated by the fact
-	//  that the public key might contain binary data, so we need to skip over it to find the secret
-	//  key. We do rely on the fact that the first 'q' in the string should be the start of the public
-	//  key, and everything before that is ASCII.
-	u_char * sec_parms = extract_gpg_sec_parms('n', "RSA", buf, buf_len, rsa_key);
-	if (sec_parms != NULL) {
-		if (strncmp(sec_parms, "(((1:d", 6) == 0) {
-			u_char * ptr = sec_parms + 2;	//  Skip opening parens
+    //  Need to find the start of the secret key params in the S-expression. Complicated by the fact
+    //  that the public key might contain binary data, so we need to skip over it to find the secret
+    //  key. We do rely on the fact that the first 'q' in the string should be the start of the public
+    //  key, and everything before that is ASCII.
+    u_char * sec_parms = extract_gpg_sec_parms('n', "RSA", buf, buf_len, rsa_key);
+    if (sec_parms != NULL) {
+        if (strncmp(sec_parms, "(((1:d", 6) == 0) {
+            u_char * ptr = sec_parms + 2;   //  Skip opening parens
 
-			int len = get_parm_from_sexpr(ptr, 'd', &(rsa_key->rsa->d));
-			if (len > 0) {
-				ptr += len;
+            int len = get_parm_from_sexpr(ptr, 'd', &(rsa_key->rsa->d));
+            if (len > 0) {
+                ptr += len;
 
-				len = get_parm_from_sexpr(ptr, 'p', &(rsa_key->rsa->q));		//  p-q swap
-				if (len > 0) {
-					ptr += len;
-					len = get_parm_from_sexpr(ptr, 'q', &(rsa_key->rsa->p));	//  Swap, part 2
-					if (len > 0) {
-						ptr += len;
-						len = get_parm_from_sexpr(ptr, 'u', &(rsa_key->rsa->iqmp));
-						if (len > 0) {
-							retval = 0;
-						}
-					}
-				}
-			}
-		}
-		free(sec_parms);
-	}
+                len = get_parm_from_sexpr(ptr, 'p', &(rsa_key->rsa->q));        //  p-q swap
+                if (len > 0) {
+                    ptr += len;
+                    len = get_parm_from_sexpr(ptr, 'q', &(rsa_key->rsa->p));    //  Swap, part 2
+                    if (len > 0) {
+                        ptr += len;
+                        len = get_parm_from_sexpr(ptr, 'u', &(rsa_key->rsa->iqmp));
+                        if (len > 0) {
+                            retval = 0;
+                        }
+                    }
+                }
+            }
+        }
+        free(sec_parms);
+    }
 
-	if (retval != 0) {
-		error("Improperly formatted data in decrypted RSA secret key - unable to process.");
-	}
-	return retval;
+    if (retval != 0) {
+        error("Improperly formatted data in decrypted RSA secret key - unable to process.");
+    }
+    return retval;
 }
 
 /**
@@ -1122,29 +1122,29 @@ extract_gpg_curve25519_seckey(const u_char * buf, int buf_len, const Key * ssh_k
     //  that the public key might contain binary data, so we need to skip over it to find the secret
     //  key. We do rely on the fact that the first 'q' in the string should be the start of the public
     //  key, and everything before that is ASCII.
-	u_char * sec_parms = extract_gpg_sec_parms('q', "Curve25519", buf, buf_len, ssh_key);
-	if (sec_parms != NULL) {
-		if (strncmp(sec_parms, "(((1:d", 6) == 0) {
-			u_char * ptr = sec_parms + 6;
-			errno = 0;
-			unsigned long len = strtoul(ptr, (char **) &ptr, 10);
-			if (errno != EINVAL && errno != ERANGE && len <= (crypto_box_SECRETKEYBYTES + 2) &&
-					*(ptr++) == ':') {
-				int pad_len = crypto_box_SECRETKEYBYTES - len;
-				if (pad_len > 0) {
-					memset(d, 0, pad_len);
-				}
+    u_char * sec_parms = extract_gpg_sec_parms('q', "Curve25519", buf, buf_len, ssh_key);
+    if (sec_parms != NULL) {
+        if (strncmp(sec_parms, "(((1:d", 6) == 0) {
+            u_char * ptr = sec_parms + 6;
+            errno = 0;
+            unsigned long len = strtoul(ptr, (char **) &ptr, 10);
+            if (errno != EINVAL && errno != ERANGE && len <= (crypto_box_SECRETKEYBYTES + 2) &&
+                    *(ptr++) == ':') {
+                int pad_len = crypto_box_SECRETKEYBYTES - len;
+                if (pad_len > 0) {
+                    memset(d, 0, pad_len);
+                }
 
-				memcpy(d + pad_len, ptr, len);
-				retval = len;
-			} else {
-				error("Improperly formatted data in decrypted secret key - unable to process.");
-			}
-		} else {
-			error("Improperly formatted data in decrypted secret key - unable to process.");
-		}
-		free(sec_parms);
-	}
+                memcpy(d + pad_len, ptr, len);
+                retval = len;
+            } else {
+                error("Improperly formatted data in decrypted secret key - unable to process.");
+            }
+        } else {
+            error("Improperly formatted data in decrypted secret key - unable to process.");
+        }
+        free(sec_parms);
+    }
 
     return retval;
 }
@@ -1166,64 +1166,64 @@ extract_gpg_curve25519_seckey(const u_char * buf, int buf_len, const Key * ssh_k
 struct sshbuf *
 generate_gpg_rsa_seckey(const Key * ssh_key, const u_char * passphrase)
 {
-	/* First, we need to compute the hash of the key data. The string to be hashed is unfortunately not quite
-	 * exactly the same format as the subsequent string to write to the key, so for now we won't worry about
-	 * reusing pieces and parts.
-	 */
-	struct sshbuf * seckey = NULL;
-	char protected_at[PROTECTED_AT_LEN];
+    /* First, we need to compute the hash of the key data. The string to be hashed is unfortunately not quite
+     * exactly the same format as the subsequent string to write to the key, so for now we won't worry about
+     * reusing pieces and parts.
+     */
+    struct sshbuf * seckey = NULL;
+    char protected_at[PROTECTED_AT_LEN];
 
-	generate_gpg_protected_at(protected_at);
+    generate_gpg_protected_at(protected_at);
 
-	struct sshbuf * pub_parms = generate_gpg_rsa_pub_parms(ssh_key);
-	struct sshbuf * sec_parms = generate_gpg_rsa_sec_parms(ssh_key);
-	struct sshbuf * hash_str = sshbuf_new();
-	struct sshbuf * sec_str = sshbuf_new();
+    struct sshbuf * pub_parms = generate_gpg_rsa_pub_parms(ssh_key);
+    struct sshbuf * sec_parms = generate_gpg_rsa_sec_parms(ssh_key);
+    struct sshbuf * hash_str = sshbuf_new();
+    struct sshbuf * sec_str = sshbuf_new();
 
-	if (pub_parms != NULL && sec_parms != NULL && hash_str != NULL && sec_str != NULL) {
-		sshbuf_put(hash_str, "(3:rsa", 6);
-		sshbuf_putb(hash_str, pub_parms);
-		sshbuf_putb(hash_str, sec_parms);
-		sshbuf_put(hash_str, protected_at, strlen(protected_at));
-		sshbuf_put_u8(hash_str, ')');
+    if (pub_parms != NULL && sec_parms != NULL && hash_str != NULL && sec_str != NULL) {
+        sshbuf_put(hash_str, "(3:rsa", 6);
+        sshbuf_putb(hash_str, pub_parms);
+        sshbuf_putb(hash_str, sec_parms);
+        sshbuf_put(hash_str, protected_at, strlen(protected_at));
+        sshbuf_put_u8(hash_str, ')');
 
-		u_char hash[SHA_DIGEST_LENGTH];
-		iron_compute_sha1_hash_sshbuf(hash_str, hash);
+        u_char hash[SHA_DIGEST_LENGTH];
+        iron_compute_sha1_hash_sshbuf(hash_str, hash);
 
-		sshbuf_put(sec_str, "((", 2);
-		sshbuf_putb(sec_str, sec_parms);
-		sshbuf_put_u8(sec_str, ')');
-		sshbuf_putf(sec_str, "(4:hash4:sha1%lu:", sizeof(hash));
-		sshbuf_put(sec_str, hash, sizeof(hash));
-		sshbuf_put(sec_str, "))", 2);
+        sshbuf_put(sec_str, "((", 2);
+        sshbuf_putb(sec_str, sec_parms);
+        sshbuf_put_u8(sec_str, ')');
+        sshbuf_putf(sec_str, "(4:hash4:sha1%lu:", sizeof(hash));
+        sshbuf_put(sec_str, hash, sizeof(hash));
+        sshbuf_put(sec_str, "))", 2);
 
-		u_char salt[S2K_SALT_BYTES];
-		u_char iv[GPG_SECKEY_IV_BYTES];
-		struct sshbuf * enc_sec_parms = encrypt_gpg_sec_parms(sec_str, passphrase, salt, iv, sizeof(iv));
-		if (enc_sec_parms != NULL) {
-			seckey = sshbuf_new();
-			if (seckey != NULL) {
-				sshbuf_putf(seckey, "(21:protected-private-key(3:rsa");
-				sshbuf_putb(seckey, pub_parms);
-				sshbuf_put(seckey, GPG_SEC_PARM_PREFIX, strlen(GPG_SEC_PARM_PREFIX));
-				sshbuf_put(seckey, salt, sizeof(salt));
-				sshbuf_putf(seckey, "8:%08d)%d:", S2K_ITER_BYTE_COUNT, (int) sizeof(iv));
-				sshbuf_put(seckey, iv, sizeof(iv));
-				sshbuf_putf(seckey, ")%lu:", sshbuf_len(enc_sec_parms));
-				sshbuf_put(seckey, sshbuf_ptr(enc_sec_parms), sshbuf_len(enc_sec_parms));
-				sshbuf_put_u8(seckey, ')');
-				sshbuf_put(seckey, protected_at, strlen(protected_at));
-				sshbuf_put(seckey, "))", 2);
-			}
-			sshbuf_free(enc_sec_parms);
-		}
-	}
-	sshbuf_free(pub_parms);
-	sshbuf_free(sec_parms);
-	sshbuf_free(hash_str);
-	sshbuf_free(sec_str);
+        u_char salt[S2K_SALT_BYTES];
+        u_char iv[GPG_SECKEY_IV_BYTES];
+        struct sshbuf * enc_sec_parms = encrypt_gpg_sec_parms(sec_str, passphrase, salt, iv, sizeof(iv));
+        if (enc_sec_parms != NULL) {
+            seckey = sshbuf_new();
+            if (seckey != NULL) {
+                sshbuf_putf(seckey, "(21:protected-private-key(3:rsa");
+                sshbuf_putb(seckey, pub_parms);
+                sshbuf_put(seckey, GPG_SEC_PARM_PREFIX, strlen(GPG_SEC_PARM_PREFIX));
+                sshbuf_put(seckey, salt, sizeof(salt));
+                sshbuf_putf(seckey, "8:%08d)%d:", S2K_ITER_BYTE_COUNT, (int) sizeof(iv));
+                sshbuf_put(seckey, iv, sizeof(iv));
+                sshbuf_putf(seckey, ")%lu:", sshbuf_len(enc_sec_parms));
+                sshbuf_put(seckey, sshbuf_ptr(enc_sec_parms), sshbuf_len(enc_sec_parms));
+                sshbuf_put_u8(seckey, ')');
+                sshbuf_put(seckey, protected_at, strlen(protected_at));
+                sshbuf_put(seckey, "))", 2);
+            }
+            sshbuf_free(enc_sec_parms);
+        }
+    }
+    sshbuf_free(pub_parms);
+    sshbuf_free(sec_parms);
+    sshbuf_free(hash_str);
+    sshbuf_free(sec_str);
 
-	return seckey;
+    return seckey;
 }
 
 /**

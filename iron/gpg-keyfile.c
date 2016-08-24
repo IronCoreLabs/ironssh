@@ -48,8 +48,8 @@
 #define SSH_KEY_PUB_EXT         ".pub"
 #define GPG_PUBLIC_KEY_FNAME    "pubring.gpg"
 #define GPG_SECKEY_SUBDIR       "private-keys-v1.d/"
-#define IRON_PUBKEY_LOCAL_FNAME "ironpubkey"	//  Name of the file when it is created in ~/.ssh
-#define IRON_PUBKEY_SUBDIR		"pubkeys/"		//  Name of the subdir of ~/.ssh that holds other users' public keys
+#define IRON_PUBKEY_LOCAL_FNAME "ironpubkey"    //  Name of the file when it is created in ~/.ssh
+#define IRON_PUBKEY_SUBDIR      "pubkeys/"      //  Name of the subdir of ~/.ssh that holds other users' public keys
 
 #define GPG_MAX_UID_LEN         128     //  Max # bytes for a user ID / comment on a public SSH key
 #define MAX_PASSPHRASE_RETRIES  3       //  Number of times user is prompted to enter passphrase to access SSH key
@@ -912,17 +912,17 @@ get_gpg_secret_signing_key(Key * rsa_key)
 {
     if (rsa_key->rsa->d != NULL) return 0;      //  Already fetched
 
-	int retval = -1;
+    int retval = -1;
     FILE * infile = open_rsa_seckey_file("r", rsa_key);
     if (infile != NULL) {
-        u_char buf[4096];		//  Just picked a big number to hold entire file
+        u_char buf[4096];       //  Just picked a big number to hold entire file
 
         int num_read = fread(buf, 1, sizeof(buf), infile);
         retval = extract_gpg_rsa_seckey(buf, num_read, rsa_key);
         fclose(infile);
     }
 
-	return retval;
+    return retval;
 }
 
 /**

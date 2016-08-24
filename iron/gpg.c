@@ -497,7 +497,7 @@ process_enc_data_hdr(SHA_CTX * mdc_ctx, EVP_CIPHER_CTX * aes_ctx, FILE * infile,
     fname[fname_len] = '\0';
     dptr += fname_len;
 
-    u_int32_t file_ts = iron_buf_to_int(dptr);
+    // u_int32_t file_ts = iron_buf_to_int(dptr);  Not using currently, so just skip over
     dptr += 4;
 
     *len -= fname_len + 1 /*format spec*/ + 1 /* fname len byte*/ + 4 /*timestamp*/;
