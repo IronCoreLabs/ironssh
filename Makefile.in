@@ -65,9 +65,6 @@ MANFMT=@MANFMT@
 TARGETS=ssh$(EXEEXT) sshd$(EXEEXT) ssh-add$(EXEEXT) ssh-keygen$(EXEEXT) ssh-keyscan${EXEEXT} ssh-keysign${EXEEXT} ssh-pkcs11-helper$(EXEEXT) ssh-agent$(EXEEXT) scp$(EXEEXT) sftp-server$(EXEEXT) sftp$(EXEEXT)
 
 # *** ICL Modification ***
-#SODIUM_VER = 1.0.11
-#SODIUM_DIR = /usr/local/Cellar/libsodium/${SODIUM_VER}
-
 TARGETS += ironsftp$(EXEEXT)
 IRON_OBJS = \
 	iron/gpg.o iron/gpg-key.o iron/gpg-keyfile.o iron/gpg-packet.o \
@@ -122,8 +119,8 @@ SSHDOBJS=sshd.o auth-rhosts.o auth-passwd.o auth-rsa.o auth-rh-rsa.o \
 	sandbox-seccomp-filter.o sandbox-capsicum.o sandbox-pledge.o \
 	sandbox-solaris.o
 
-MANPAGES	= moduli.5.out scp.1.out ssh-add.1.out ssh-agent.1.out ssh-keygen.1.out ssh-keyscan.1.out ssh.1.out sshd.8.out sftp-server.8.out sftp.1.out ssh-keysign.8.out ssh-pkcs11-helper.8.out sshd_config.5.out ssh_config.5.out
-MANPAGES_IN	= moduli.5 scp.1 ssh-add.1 ssh-agent.1 ssh-keygen.1 ssh-keyscan.1 ssh.1 sshd.8 sftp-server.8 sftp.1 ssh-keysign.8 ssh-pkcs11-helper.8 sshd_config.5 ssh_config.5
+MANPAGES	= moduli.5.out scp.1.out ssh-add.1.out ssh-agent.1.out ssh-keygen.1.out ssh-keyscan.1.out ssh.1.out sshd.8.out sftp-server.8.out sftp.1.out ssh-keysign.8.out ssh-pkcs11-helper.8.out sshd_config.5.out ssh_config.5.out ironsftp.1.out
+MANPAGES_IN	= moduli.5 scp.1 ssh-add.1 ssh-agent.1 ssh-keygen.1 ssh-keyscan.1 ssh.1 sshd.8 sftp-server.8 sftp.1 ssh-keysign.8 ssh-pkcs11-helper.8 sshd_config.5 ssh_config.5 ironsftp.1
 MANTYPE		= @MANTYPE@
 
 CONFIGFILES=sshd_config.out ssh_config.out moduli.out
@@ -359,6 +356,7 @@ install-files:
 	$(INSTALL) -m 644 sftp-server.8.out $(DESTDIR)$(mandir)/$(mansubdir)8/sftp-server.8
 	$(INSTALL) -m 644 ssh-keysign.8.out $(DESTDIR)$(mandir)/$(mansubdir)8/ssh-keysign.8
 	$(INSTALL) -m 644 ssh-pkcs11-helper.8.out $(DESTDIR)$(mandir)/$(mansubdir)8/ssh-pkcs11-helper.8
+	$(INSTALL) -m 644 ironsftp.1.out $(DESTDIR)$(mandir)/$(mansubdir)1/ironsftp.1
 
 install-sysconf:
 	if [ ! -d $(DESTDIR)$(sysconfdir) ]; then \
@@ -435,6 +433,7 @@ uninstall:
 	-rm -f $(DESTDIR)$(mandir)/$(mansubdir)8/sftp-server.8
 	-rm -f $(DESTDIR)$(mandir)/$(mansubdir)8/ssh-keysign.8
 	-rm -f $(DESTDIR)$(mandir)/$(mansubdir)8/ssh-pkcs11-helper.8
+	-rm -f $(DESTDIR)$(mandir)/$(mansubdir)1/ironsftp.1
 
 regress-prep:
 	[ -d `pwd`/regress ] || mkdir -p `pwd`/regress
