@@ -117,12 +117,12 @@ iron_int_to_buf(int val, u_char * buf)
 u_int32_t
 iron_buf_to_int(const u_char * buf)
 {
-    unsigned int len = 0;
+    u_int32_t val = 0;
     for (int i = 0; i < 4; i++) {
-        len = (len << 8) + buf[i];
+        val = (val << 8) + buf[i];
     }
 
-    return len;
+    return val;
 }
 
 /**
