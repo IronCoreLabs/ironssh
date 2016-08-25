@@ -12,11 +12,13 @@ env:
       - OS=fedora DIST=23 PACK=rpm
       - OS=fedora DIST=24 PACK=rpm
       - OS=fedora DIST=rawhide PACK=rpm
-      - PACK=none
+      - OS=ubuntu DIST=wily PACK=deb
+      - OS=ubuntu DIST=xenial PACK=deb
+      - OS=ubuntu DIST=yakkety PACK=deb
+      - OS=debian DIST=stretch PACK=deb
 
 script:
   - git clone https://github.com/tarantool/build.git
-  - git describe --long --always > VERSION
   - ./build/pack/travis.sh
 
 notifications:
