@@ -1,6 +1,7 @@
 #include "regress/unittests/test_helper/test_helper.h"
 
 #include "iron/gpg-packet.c"
+#include <unistd.h>
 
 typedef struct tdata {
     unsigned char * h;
@@ -187,16 +188,23 @@ test_packets(void)
 
     fclose(tstfile);
     gpg_packet pkt;
-    int retval = put_gpg_packet(tstfile, &pkt);
-    ASSERT_INT_EQ(retval, -1);
-
     //  Need to start over with a new empty file because Linux doesn't return an error on fread() of a
-    //  closed file. It happily makes up some random crap. fwrite() on an empty file does seem to return
-    //  an error, though
-    tstfile = tmpfile();
-    retval = get_gpg_packet(tstfile, &pkt);
+    //  closed file. It happily makes up some random crap.
+    char tfn[PATH_MAX];
+    strcpy(tfn, "/tmp/ironcore_test_XXXX");
+    int tfd = mkstemp(tfn);
+    tstfile = fdopen(tfd, "r");
+    int retval = get_gpg_packet(tstfile, &pkt);
     ASSERT_INT_EQ(retval, -1);
     fclose(tstfile);
+
+    //  Similar problem writing - can't try to write to an fclosed file. Open a file for read, then try
+    //  to write to it.
+    tstfile = fopen(tfn, "r");
+    retval = put_gpg_packet(tstfile, &pkt);
+    ASSERT_INT_EQ(retval, -1);
+    fclose(tstfile);
+    unlink(tfn);
 
     TEST_DONE();
 }
