@@ -42,3 +42,7 @@ ssh-pkcs11-helper
 sshd
 survey.sh
 *.dSYM
+ironsftp
+ironscp
+build
+VERSION

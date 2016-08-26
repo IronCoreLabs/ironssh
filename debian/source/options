@@ -1,0 +1,8 @@
+# don't pack some non-free and generated files for Debian
+extend-diff-ignore = ".*\.git$"
+extend-diff-ignore = ".*\.git/.*"
+extend-diff-ignore = "\..*\.swp$"
+extend-diff-ignore = "\..*\.swo$"
+extend-diff-ignore = "\.swp$"
+extend-diff-ignore = "\.swo$"
+extend-diff-ignore = "autom4te\.cache/.*"

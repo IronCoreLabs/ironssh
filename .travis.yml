@@ -1,0 +1,29 @@
+sudo: required
+services:
+  - docker
+
+language: c
+
+cache: ccache
+
+env:
+    matrix:
+      - OS=centos DIST=7 PACK=rpm
+      - OS=fedora DIST=23 PACK=rpm
+      - OS=fedora DIST=24 PACK=rpm
+      - OS=ubuntu DIST=wily PACK=deb
+      - OS=ubuntu DIST=xenial PACK=deb
+      - OS=ubuntu DIST=yakkety PACK=deb
+      - OS=debian DIST=stretch PACK=deb
+
+script:
+  - git clone https://github.com/zmre/build.git
+  - ./build/pack/travis.sh
+
+notifications:
+  email: true
+  irc: false
+  slack:
+    on_success: change
+    on_failure: always
+    secure: Ep0GkNkPcrthphR+DdlDpZORCv6wh6mHOIni79BasJWBDS1VZLuVRrHi9dgFU5bDxqbE31NBED0seOGS9ZNl6Z+m/3FOg/cGZ66IWXpEnnpcjyg98DOyHdY+Zer2KgnZwr9mNlVVOX2mr2ytGBLmTYYGsN34TcKnsTboei8454GV2AeYiocRjwFUim4VuRT0v4z6m4pE4tUATVg605eSLfjU5lAT64DZNtVHtMy8EQ9I4NtXAox59hAhe3hqJFQ+oZwC9uuOLxsYazmgeUHf9Z88PJDZQN9zr7FTSnjB//Wl6W/16HJ1RGD44gqoOZOfPQ/SXZYpNtmOUiwn3qBwre55ewYRRz/mYQ/pzvFPu2NAY0lpVVYN9/OAUIp1SpThGrkebHAm0h/T1FVv3+FLPKvIzybQ9GB+GoWoleKCDQdYj6RMVm9c0Y+1J0yauRltwzRf8RZ2sWxdrduZK3aNVh8ePG0K1KFeLWDlGwBkMJfOEa5xiw7OWb+SsRaTcKl8JnfLFGWW5YBdbmZ1NFmrE8H2ySyf0f4tp3sC26c19bN2XqEJ83XE5dYtKXIVMPitz2kTRcxteNRFHwHy4eepSfZ+oTtkYu5eJJfhTkPrzmiMGn9i1XBXh7ON5OrzhLOTRMNM6xQpn1zjGecRIfjWTu2fvxNPv5QLrOxPl3Db3FQ=
