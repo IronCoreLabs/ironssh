@@ -1093,7 +1093,6 @@ finalize_gpg_data_signature_packet(SHA256_CTX * sig_ctx, Key * rsa_key, gpg_pack
         //  we will come up short. Just fill out the remainder of the packet with zero bytes so it is the
         //  length we specified when we wrote the packet headers already.
         for (int tmp = 0; tmp < RSA_size(rsa_key->rsa) - BN_num_bytes(sig); tmp++) {
-            logit("Padding with %d bytes", RSA_size(rsa_key->rsa) - BN_num_bytes(sig));
             sshbuf_put_u8(sig_pkt->data, 0);
         }
         if ((ssize_t) sshbuf_len(sig_pkt->data) != sig_pkt->len) {
