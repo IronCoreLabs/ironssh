@@ -894,7 +894,7 @@ get_gpg_pkesk_packet(FILE * infile, const char * key_id, u_char * pkt, gpg_tag *
 
     int known_user_ct = 0;
     int unknown_user_ct = 0;
-    char known_users[10 * (IRON_MAX_LOGIN_LEN + 2) + 1];
+    char known_users[(IRON_MAX_RECIPIENTS - 1) * (IRON_MAX_LOGIN_LEN + 2) + 1];
     known_users[0] = '\0';
 
     while (tag == GPG_TAG_PKESK && !feof(infile)) {
@@ -925,14 +925,12 @@ get_gpg_pkesk_packet(FILE * infile, const char * key_id, u_char * pkt, gpg_tag *
             const gpg_public_key * user_keys = iron_get_recipient_keys_by_key_id(pkt_start + 1);
             if (user_keys != NULL) login = user_keys->login;
             else login = iron_get_user_by_key_id(pkt_start + 1);
-            if (login != NULL) {
-                if (strlen(known_users) + strlen(login) + 3 < sizeof(known_users)) {
-                    if (known_user_ct > 0) {
-                        strcat(known_users, ", ");
-                    }
-                    strlcat(known_users, login, IRON_MAX_LOGIN_LEN + 1);
-                    known_user_ct++;
+            if (login != NULL && known_user_ct < IRON_MAX_RECIPIENTS - 1) {
+                if (known_user_ct > 0) {
+                    strcat(known_users, ", ");
                 }
+                strlcat(known_users, login, IRON_MAX_LOGIN_LEN + 1);
+                known_user_ct++;
             } else {
                 unknown_user_ct++;
             }
@@ -949,12 +947,12 @@ get_gpg_pkesk_packet(FILE * infile, const char * key_id, u_char * pkt, gpg_tag *
 
     if (retval == 0 && !feof(infile)) {
         if (*known_users != '\0') {
-            logit("Data was encrypted to user%s %s", (known_user_ct > 1) ? "s" : "", known_users);
+            logit("Data was shared with user%s %s", (known_user_ct > 1) ? "s" : "", known_users);
             if (unknown_user_ct > 0) {
-                logit("and to %d unknown user%s.", unknown_user_ct, (unknown_user_ct > 1) ? "s" : "");
+                logit("  and with %d unknown user%s.", unknown_user_ct, (unknown_user_ct > 1) ? "s" : "");
             }
         } else if (unknown_user_ct > 0) {
-            logit("Data was encrypted to %d unknown user%s.", unknown_user_ct, (unknown_user_ct > 1) ? "s" : "");
+            logit("Data was shared with %d unknown user%s.", unknown_user_ct, (unknown_user_ct > 1) ? "s" : "");
         }
         *next_tag = tag;
         *next_len = len;
