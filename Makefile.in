@@ -275,7 +275,7 @@ distclean:	regressclean
 	rm -f *.o *.a $(TARGETS) logintest config.cache config.log
 	rm -f *.out core opensshd.init openssh.xml
 	rm -f Makefile buildpkg.sh config.h config.status
-	rm -f survey.sh openbsd-compat/regress/Makefile *~ 
+	rm -f survey.sh openbsd-compat/regress/Makefile *~
 	rm -rf autom4te.cache
 	rm -f regress/unittests/test_helper/*.a
 	rm -f regress/unittests/test_helper/*.o
@@ -318,7 +318,7 @@ distprep: catman-do
 	$(AUTORECONF)
 	-rm -rf autom4te.cache
 
-install: $(CONFIGFILES) $(MANPAGES) $(TARGETS) install-files install-iron-files install-sysconf host-key check-config
+install: ironsftp install-iron-files
 install-nokeys: $(CONFIGFILES) $(MANPAGES) $(TARGETS) install-files install-sysconf
 install-nosysconf: $(CONFIGFILES) $(MANPAGES) $(TARGETS) install-files
 

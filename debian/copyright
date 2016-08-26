@@ -52,6 +52,7 @@ Copyright:
  Internet Software Consortium
  Reyk Floeter
  Chad Mynhier
+ IronCore Labs, Inc.
 License: OpenSSH
  Tatu Ylonen's original licence is as follows (excluding some terms about
  third-party code which are no longer relevant; see the LICENCE file for
@@ -215,11 +216,11 @@ Copyright: 1995 Patrick Powell
 
 
 Files: iron/*
-Copyright: 2016 IronCore Labs <info@ironcorelabs.com>
+Copyright: 2016 IronCore Labs, Inc. <info@ironcorelabs.com>
 License: BSD-3-Clause
 
 Files: debian/*
-Copyright: 2016 IronCore Labs <info@ironcorelabs.com>
+Copyright: 2016 IronCore Labs, Inc. <info@ironcorelabs.com>
 License: BSD-3-Clause
 
 

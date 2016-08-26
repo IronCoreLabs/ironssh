@@ -1,5 +1,5 @@
 # Don't bother building a debug package. Open source so people can go nuts
-# debugging source code if desird.
+# debugging source code if desired.
 %define debug_package %{nil}
 
 # Some openssh binaries will also be built and should be ignored
@@ -51,13 +51,8 @@ make SSH_PROGRAM=%{_bindir}/ssh ironsftp
 
 %install
 rm -rf $RPM_BUILD_ROOT
-mkdir -p -m755 $RPM_BUILD_ROOT%{_sysconfdir}/ssh
-mkdir -p -m755 $RPM_BUILD_ROOT%{_libexecdir}/openssh
-mkdir -p -m755 $RPM_BUILD_ROOT%{_var}/empty/sshd
 
 make install DESTDIR=$RPM_BUILD_ROOT
-
-install -d $RPM_BUILD_ROOT%{_libexecdir}/openssh
 
 perl -pi -e "s|$RPM_BUILD_ROOT||g" $RPM_BUILD_ROOT%{_mandir}/man*/*
 
