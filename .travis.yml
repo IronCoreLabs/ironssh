@@ -18,7 +18,7 @@ env:
       - OS=debian DIST=stretch PACK=deb
 
 script:
-  - git clone https://github.com/tarantool/build.git
+  - git clone https://github.com/zmre/build.git
   - ./build/pack/travis.sh
 
 notifications:
