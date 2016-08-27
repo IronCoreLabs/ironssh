@@ -1834,7 +1834,11 @@ parse_dispatch_command(struct sftp_conn *conn, const char *cmd, char **pwd,
 static char *
 prompt(EditLine *el)
 {
+#ifdef IRONCORE
+	return ("ironsftp> ");
+#else
 	return ("sftp> ");
+#endif
 }
 
 /* Display entries in 'list' after skipping the first 'len' chars */
@@ -2284,14 +2288,22 @@ interactive_loop(struct sftp_conn *conn, char *file1, char *file2)
 
 		if (el == NULL) {
 			if (interactive)
+#ifdef IRONCORE
+				printf("ironsftp> ");
+#else
 				printf("sftp> ");
+#endif
 			if (fgets(cmd, sizeof(cmd), infile) == NULL) {
 				if (interactive)
 					printf("\n");
 				break;
 			}
 			if (!interactive) { /* Echo command */
+#ifdef IRONCORE
+				mprintf("ironsftp> %s", cmd);
+#else
 				mprintf("sftp> %s", cmd);
+#endif
 				if (strlen(cmd) > 0 &&
 				    cmd[strlen(cmd) - 1] != '\n')
 					printf("\n");

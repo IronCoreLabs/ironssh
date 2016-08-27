@@ -371,6 +371,16 @@ write_gpg_encrypted_file(const char * fname, char * enc_fname)
                                                        GPG_KEY_ID_FROM_FP(recipient_key[0].signer_fp), outfile);
                     if (retval == 0) {
                         retval = fileno(outfile);
+
+                        char user_list[(IRON_MAX_RECIPIENTS - 1) * (IRON_MAX_LOGIN_LEN + 2) + 1];
+                        user_list[0] = '\0';
+                        for (int ct = 1; ct < recip_ct; ct++) {
+                            if (ct > 1) strcat(user_list, ", ");
+                            strlcat(user_list, recipient_key[ct].login, IRON_MAX_LOGIN_LEN + 1);
+                        }
+                        if (recip_ct > 1) {
+                            logit("Data was shared with user%s %s", (recip_ct > 2) ? "s" : "", user_list);
+                        }
                     }
                 }
             } else {
