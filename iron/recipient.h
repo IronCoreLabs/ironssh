@@ -35,6 +35,8 @@
 #include "iron-gpg.h"
 #include "iron/gpg-internal.h"
 
+#define IRON_MAX_RECIPIENTS 11      //  Max # people with whom to share access to a file, including
+                                    //  the person who generated the file.
 #define IRON_MAX_LOGIN_LEN  32
 
 /*  Public keys (signing and encryption) and associated info for the specified login.  */

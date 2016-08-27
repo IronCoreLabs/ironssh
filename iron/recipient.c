@@ -44,8 +44,7 @@
 //  always be in the list.
 //================================================================================
 
-#define MAX_RECIPIENTS  11
-static gpg_public_key recipient_list[11];
+static gpg_public_key recipient_list[IRON_MAX_RECIPIENTS];
 static int num_recipients = 0;
 
 /**
@@ -153,7 +152,7 @@ iron_add_recipient(const char * login)
     }
 
     if (retval == 0) {
-        if (num_recipients < MAX_RECIPIENTS) {
+        if (num_recipients < IRON_MAX_RECIPIENTS) {
             gpg_public_key * new_ent = recipient_list + num_recipients;
             strncpy(new_ent->login, login, IRON_MAX_LOGIN_LEN);
             new_ent->login[IRON_MAX_LOGIN_LEN] = 0;
