@@ -581,8 +581,15 @@ extract_gpg_rsa_pubkey(const struct sshbuf * buf, Key * rsa_key)
                 rsa_key->rsa->e = BN_new();
                 BN_bin2bn(ptr, key_len, rsa_key->rsa->e);
                 retval = 0;
+            } else {
+                error("Key data too long in RSA public key. Unable to retrieve key.");
             }
+        } else {
+            error("Unexpected public key algorithm in RSA public key. Unable to retrieve key.");
         }
+    } else {
+        error("Data in  RSA public key too short. Unable to retrieve key.");
+
     }
 
     return retval;
@@ -967,10 +974,13 @@ decrypt_gpg_sec_parms(const u_char * enc_data, int len, const Key * rsa_pubkey, 
             output = malloc(len);
             if (output != NULL) {
                 if (cipher_crypt(&ciphercontext, 0, output, enc_data, len, 0, 0) != 0) {
+                    error("Decryption of RSA private key failed.");
                     free(output);
                     output = NULL;
                 }
             }
+        } else {
+            error("Failed to initialize to decrypt RSA private key.");
         }
     }
 
@@ -1106,6 +1116,12 @@ extract_gpg_rsa_seckey(const u_char * buf, int buf_len, Key * rsa_key)
                     }
                 }
             }
+
+            if (retval != 0) {
+                error("Unable to extract the RSA private key parameters from the key data.");
+            }
+        } else {
+            error("Could not decrypt RSA private key parameters correctly.");
         }
         free(sec_parms);
     }

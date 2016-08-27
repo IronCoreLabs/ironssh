@@ -1097,12 +1097,20 @@ finalize_gpg_data_signature_packet(SHA256_CTX * sig_ctx, Key * rsa_key, gpg_pack
     if (get_gpg_secret_signing_key(rsa_key) == 0) {
         BIGNUM * sig = iron_compute_rsa_signature(sig_hash, SHA256_DIGEST_LENGTH, rsa_key);
         iron_put_bignum(sig_pkt->data, sig);
-        BN_clear_free(sig);
-        if ((int)sshbuf_len(sig_pkt->data) == (int)sig_pkt->len) {
-            retval = 0;
-        } else {
-            error("Internal error finalizing signature packet.");
+        retval = 0;
+
+        //  There is a chance that the signature ended up being shorter than the expected length - when it
+        //  is converted to a bignum, leading zero bits are dropped, so if there are 8 or more leading zeroes,
+        //  we will come up short. Just fill out the remainder of the packet with zero bytes so it is the
+        //  length we specified when we wrote the packet headers already.
+        for (int tmp = 0; tmp < RSA_size(rsa_key->rsa) - BN_num_bytes(sig); tmp++) {
+            sshbuf_put_u8(sig_pkt->data, 0);
         }
+        if ((ssize_t) sshbuf_len(sig_pkt->data) != sig_pkt->len) {
+            retval = -1;
+            error("Did not generate complete contents of data signature packet."); 
+        }
+        BN_clear_free(sig);
     }
 
     return retval;
@@ -1127,7 +1135,7 @@ process_data_signature_packet(const u_char * dec_buf, int buf_len, SHA256_CTX * 
     gpg_tag tag;
     size_t len;
     int sig_hdr_len = extract_gpg_tag_and_size(dec_buf, &tag, &len);
-    if (sig_hdr_len < 0 || buf_len < (int) len) return -1;
+    if (sig_hdr_len < 0 || buf_len < (int) (sig_hdr_len + len)) return -1;
     if (tag != GPG_TAG_SIGNATURE) return -2;
 
     const u_char * dptr = dec_buf + sig_hdr_len;
@@ -1176,11 +1184,24 @@ process_data_signature_packet(const u_char * dec_buf, int buf_len, SHA256_CTX * 
         signer_keys = iron_get_user_keys_by_key_id(key_id);
     }
     if (signer_keys != NULL) {
+        //  When we wrote the signature packet, if by some chance the signature had eight or more leading
+        //  zero bits, those got truncated when the signature was converted to a BIGNUM. Needed to do that
+        //  to keep GPG happy. However, if we try to verify that signature, OpenSSL fails immediate. So we
+        //  need to pad with leading zeroes here to make the signature verifiable.
         int sig_len = (*dptr << 8) + *(dptr + 1);   //  Size in bits
         dptr += 2;
         sig_len = (sig_len + 7) / 8;            //  Convert to bytes
 
-        if (RSA_verify(NID_sha256, hash, SHA256_DIGEST_LENGTH, dptr, sig_len, signer_keys->rsa_key.rsa) != 1) {
+        int exp_size = RSA_size(signer_keys->rsa_key.rsa);
+        int short_ct = exp_size - sig_len;
+        u_char tmp_sig[GPG_MAX_KEY_SIZE];
+        if (short_ct != 0) {
+            bzero(tmp_sig, short_ct);
+            memcpy(tmp_sig + short_ct, dptr, sig_len);
+            dptr = tmp_sig;
+        }
+
+        if (RSA_verify(NID_sha256, hash, SHA256_DIGEST_LENGTH, dptr, exp_size, signer_keys->rsa_key.rsa) != 1) {
             error("ERROR: message was signed by user %s, key ID %s,\n       but signature is not correct.",
                   signer_keys->login, hex_id);
             return -13;
