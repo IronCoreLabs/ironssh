@@ -283,6 +283,7 @@ write_encrypted_data_file(FILE * infile, const char * fname, const u_char * sym_
         if (retval == 0) {
             //  From this point, everything is hashed and encrypted. Start with the random prefix bytes, then the
             //  last two bytes repeated.
+            retval = -1;
             u_char input[128];
             u_char output[128];
             randombytes_buf(input, AES_BLOCK_SIZE);
