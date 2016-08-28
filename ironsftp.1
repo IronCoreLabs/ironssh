@@ -198,10 +198,10 @@ in the format used in
 .Xr ssh_config 5 .
 This is useful for specifying options
 for which there is no separate
-.Nm sftp
+.Nm ironsftp
 command-line flag.
 For example, to specify an alternate port use:
-.Ic sftp -oPort=24 .
+.Ic ironsftp -oPort=24 .
 For full details of the options listed below, and their possible values, see
 .Xr ssh_config 5 .
 .Pp
@@ -330,7 +330,7 @@ fails, you will be unable to add that user as a recipient. (
 -specific command.)
 .It Ic bye
 Quit
-.Nm sftp .
+.Nm ironsftp .
 .It Ic cd Ar path
 Change remote directory to
 .Ar path .
@@ -390,7 +390,7 @@ This command is only supported on servers that implement the
 extension.
 .It Ic exit
 Quit
-.Nm sftp .
+.Nm ironsftp .
 .It Ic finduser Ar username
 Retrieve the public key information for the specified user from the remote
 server. This is similar to the 
