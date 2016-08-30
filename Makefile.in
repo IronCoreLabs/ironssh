@@ -482,12 +482,6 @@ regress/check-perm$(EXEEXT): $(srcdir)/regress/check-perm.c $(REGRESSLIBS)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ $(srcdir)/regress/check-perm.c \
 	$(LDFLAGS) -lssh -lopenbsd-compat -lssh -lopenbsd-compat $(LIBS)
 
-regress/enc-dec-file$(EXEEXT): $(srcdir)/regress/enc-dec-file.c \
-	iron-sftp-common.o $(IRON_OBJS) iron-gpg.h iron-common.h
-	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ $(srcdir)/regress/enc-dec-file.c \
-	iron-sftp-common.o $(IRON_OBJS) $(LDFLAGS) -lssh -lopenbsd-compat \
-	-lsodium $(LIBS)
-
 UNITTESTS_TEST_HELPER_OBJS=\
 	regress/unittests/test_helper/test_helper.o \
 	regress/unittests/test_helper/fuzz.o
@@ -562,37 +556,18 @@ regress/misc/kexfuzz/kexfuzz$(EXEEXT): ${MISC_KEX_FUZZ_OBJS} libssh.a
 	$(LD) -o $@ $(LDFLAGS) $(MISC_KEX_FUZZ_OBJS) \
 	    -lssh -lopenbsd-compat -lssh -lopenbsd-compat $(LIBS)
 
-UNITTESTS_TEST_IRONGPG_OBJS=\
-	regress/unittests/irongpg/tests.o \
-	regress/unittests/irongpg/test_gpg-key.o \
-	regress/unittests/irongpg/test_gpg-keyfile.o \
-	regress/unittests/irongpg/test_gpg-packet.o \
-	regress/unittests/irongpg/test_gpg-trustdb.o \
-	regress/unittests/irongpg/test_gpg.o \
-	regress/unittests/irongpg/test_recipient.o \
-	regress/unittests/irongpg/test_util.o
-
-regress/unittests/irongpg/test_irongpg$(EXEEXT): \
-    ${UNITTESTS_TEST_IRONGPG_OBJS} ${IRON_OBJS} \
-    regress/unittests/test_helper/libtest_helper.a libssh.a
-	$(LD) -o $@ $(LDFLAGS) $(UNITTESTS_TEST_IRONGPG_OBJS) \
-	    regress/unittests/test_helper/libtest_helper.a \
-	    -lsodium -lssh -lopenbsd-compat -lssh -lopenbsd-compat $(LIBS)
-
 regress-binaries: regress/modpipe$(EXEEXT) \
 	regress/setuid-allowed$(EXEEXT) \
 	regress/netcat$(EXEEXT) \
 	regress/check-perm$(EXEEXT) \
-	regress/enc-dec-file$(EXEEXT) \
 	regress/unittests/sshbuf/test_sshbuf$(EXEEXT) \
 	regress/unittests/sshkey/test_sshkey$(EXEEXT) \
 	regress/unittests/bitmap/test_bitmap$(EXEEXT) \
 	regress/unittests/hostkeys/test_hostkeys$(EXEEXT) \
 	regress/unittests/kex/test_kex$(EXEEXT) \
-	regress/unittests/irongpg/test_irongpg$(EXEEXT) \
 	regress/misc/kexfuzz/kexfuzz$(EXEEXT)
 
-tests interop-tests t-exec: regress-prep regress-binaries $(IRON_TARGETS)
+tests interop-tests t-exec: regress-prep regress-binaries
 	BUILDDIR=`pwd`; \
 	TEST_SSH_SCP="$${BUILDDIR}/scp"; \
 	TEST_SSH_SSH="$${BUILDDIR}/ssh"; \
@@ -644,6 +619,61 @@ regressclean:
 	if [ -f regress/Makefile ] && [ -r regress/Makefile ]; then \
 		(cd regress && $(MAKE) clean) \
 	fi
+
+iregress-prep:
+	[ -d `pwd`/regress ] || mkdir -p `pwd`/regress
+	[ -d `pwd`/regress/unittests ] || mkdir -p `pwd`/regress/unittests
+	[ -d `pwd`/regress/unittests/test_helper ] || \
+		mkdir -p `pwd`/regress/unittests/test_helper
+	[ -d `pwd`/regress/unittests/irongpg ] || \
+		mkdir -p `pwd`/regress/unittests/irongpg
+	[ -f `pwd`/regress/Makefile ] || \
+	    ln -s `cd $(srcdir) && pwd`/regress/Makefile `pwd`/regress/Makefile
+
+iregress-binaries: \
+	regress/enc-dec-file$(EXEEXT) \
+	regress/unittests/irongpg/test_irongpg$(EXEEXT)
+
+iron-tests: iregress-prep iregress-binaries
+	BUILDDIR=`pwd`; \
+	TEST_SSH_IRONSFTP="$${BUILDDIR}/ironsftp"; \
+	TEST_SSH_SSHD="$${BUILDDIR}/sshd"; \
+	cd $(srcdir)/regress || exit $$?; \
+	$(MAKE) \
+		.OBJDIR="$${BUILDDIR}/regress" \
+		.CURDIR="`pwd`" \
+		BUILDDIR="$${BUILDDIR}" \
+		OBJ="$${BUILDDIR}/regress/" \
+		PATH="$${BUILDDIR}:$${PATH}" \
+		TEST_ENV=MALLOC_OPTIONS="@TEST_MALLOC_OPTIONS@" \
+		TEST_MALLOC_OPTIONS="@TEST_MALLOC_OPTIONS@" \
+		TEST_SSH_IRONSFTP="$${TEST_SSH_IRONSFTP}" \
+		TEST_SSH_SSHD="$${TEST_SSH_SSHD}" \
+		TEST_SHELL="${TEST_SHELL}" \
+		EXEEXT="$(EXEEXT)" \
+		$@ && echo all tests passed
+
+UNITTESTS_TEST_IRONGPG_OBJS=\
+	regress/unittests/irongpg/tests.o \
+	regress/unittests/irongpg/test_gpg-key.o \
+	regress/unittests/irongpg/test_gpg-keyfile.o \
+	regress/unittests/irongpg/test_gpg-packet.o \
+	regress/unittests/irongpg/test_gpg-trustdb.o \
+	regress/unittests/irongpg/test_gpg.o \
+	regress/unittests/irongpg/test_recipient.o \
+	regress/unittests/irongpg/test_util.o
+
+regress/enc-dec-file$(EXEEXT): $(srcdir)/regress/enc-dec-file.c \
+	$(IRON_OBJS) iron-gpg.h iron-common.h
+	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ $(srcdir)/regress/enc-dec-file.c \
+	$(IRON_OBJS) $(LDFLAGS) -lssh -lopenbsd-compat -lsodium $(LIBS)
+
+regress/unittests/irongpg/test_irongpg$(EXEEXT): \
+    ${UNITTESTS_TEST_IRONGPG_OBJS} \
+    regress/unittests/test_helper/libtest_helper.a libssh.a
+	$(LD) -o $@ $(LDFLAGS) $(UNITTESTS_TEST_IRONGPG_OBJS) \
+	    regress/unittests/test_helper/libtest_helper.a \
+	    -lsodium -lssh -lopenbsd-compat -lssh -lopenbsd-compat $(LIBS)
 
 survey: survey.sh ssh
 	@$(SHELL) ./survey.sh > survey

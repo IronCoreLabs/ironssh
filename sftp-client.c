@@ -2088,10 +2088,16 @@ add_home_dir_root(const char * path)
 		max_home_dir_roots += HOME_DIR_ROOT_BLOCK_SIZE;
 		home_dir_roots = realloc(home_dir_roots, sizeof(const char *) * max_home_dir_roots);
 	}
-	const char * last_slash = strrchr(path, '/');
+
+    //  Trim trailing '/', if there is one.
+    char lpath[PATH_MAX];
+    strlcpy(lpath, path, sizeof(lpath));
+    if (lpath[strlen(lpath) - 1] == '/') lpath[strlen(lpath) - 1] = '\0';
+
+	char * last_slash = strrchr(lpath, '/');
 	if (last_slash != NULL) {
-		char * home_dir = malloc(last_slash - path + 1);
-		strlcpy(home_dir, path, last_slash - path + 1);
+        *(last_slash + 1) = '\0';
+		char * home_dir = strdup(lpath);
 		home_dir_roots[num_home_dir_roots] = home_dir;
 		num_home_dir_roots++;
 	}

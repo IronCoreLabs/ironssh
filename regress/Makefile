@@ -1,5 +1,29 @@
 #	$OpenBSD: Makefile,v 1.88 2016/06/03 04:10:41 dtucker Exp $
 
+IRON_REGRESS_TARGETS= iron-unit iron-exec
+
+ITESTS= enc-dec-file ironsftp
+
+iron-tests: prep $(IRON_REGRESS_TARGETS)
+
+# IronCore unit tests, built by top-level Makefile
+iron-unit:
+	set -e ; if test -z "${SKIP_UNIT}" ; then \
+		V="" ; \
+		test "x${USE_VALGRIND}" = "x" || \
+		    V=${.CURDIR}/valgrind-unit.sh ; \
+		$$V ${.OBJDIR}/unittests/irongpg/test_irongpg ; \
+	fi
+
+iron-exec: ${ITESTS:=.sh}
+	@if [ "x$?" = "x" ]; then exit 0; fi; \
+	for TEST in ""$?; do \
+		echo "run test $${TEST}" ... 1>&2; \
+		(env SUDO="${SUDO}" TEST_ENV=${TEST_ENV} ${TEST_SHELL} ${.CURDIR}/iron-test-exec.sh ${.OBJDIR} ${.CURDIR}/$${TEST}) || exit $$?; \
+	done
+
+
+# Original OpenSSH tests below
 REGRESS_TARGETS=	unit t1 t2 t3 t4 t5 t6 t7 t8 t9 t10 t11 t12 t-exec
 tests:		prep $(REGRESS_TARGETS)
 
@@ -222,5 +246,4 @@ unit:
 		$$V ${.OBJDIR}/unittests/kex/test_kex ; \
 		$$V ${.OBJDIR}/unittests/hostkeys/test_hostkeys \
 			-d ${.CURDIR}/unittests/hostkeys/testdata ; \
-		$$V ${.OBJDIR}/unittests/irongpg/test_irongpg ; \
 	fi

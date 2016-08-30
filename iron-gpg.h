@@ -38,6 +38,7 @@
 
 
 extern int  iron_initialize(void);
+extern void iron_set_user(const char * path);
 extern void iron_set_host(const char * hostname);
 extern int  iron_check_keys(void);
 extern int  iron_generate_keys(void);

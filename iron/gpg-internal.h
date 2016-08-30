@@ -42,6 +42,7 @@
 //  If you have a key fingerprint, this macro gives you a pointer to the key ID that corresponds to the FP
 #define GPG_KEY_ID_FROM_FP(fp) ((fp) + GPG_KEY_ID_OFFSET)
 
+#define IRON_SSH_DIR            ".ssh/"         //  subdir of ~ that holds ssh keys
 #define IRONCORE_SUBDIR         "ironcore/"     //  subdir of ~/.ssh that holds all IronCore files
 
 
