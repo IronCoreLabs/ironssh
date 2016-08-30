@@ -633,6 +633,7 @@ iregress-prep:
 	    ln -s `cd $(srcdir) && pwd`/regress/Makefile `pwd`/regress/Makefile
 
 iregress-binaries: \
+	sftp-server$(EXEEXT) \
 	regress/enc-dec-file$(EXEEXT) \
 	regress/unittests/irongpg/test_irongpg$(EXEEXT)
 

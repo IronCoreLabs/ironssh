@@ -73,7 +73,7 @@ SSH=/usr/local/bin/ssh
 SSHD=sshd
 SSHKEYGEN=ssh-keygen
 IRONSFTP=ironsftp
-SFTPSERVER=/usr/libexec/sftp-server
+SFTPSERVER=sftp-server
 
 if [ "x$TEST_SSH_SSH" != "x" ]; then
 	SSH="${TEST_SSH_SSH}"
@@ -125,11 +125,7 @@ if [ "x$USE_VALGRIND" != "x" ]; then
 			VG_PATH="$VALGRIND_PATH"
 		fi
 		VG="$VG_PATH $VG_OPTS"
-		SSH="$VG --log-file=${VG_LOG}ssh.%p $SSH"
-		SSHD="$VG --log-file=${VG_LOG}sshd.%p $SSHD"
-		SSHKEYGEN="$VG --log-file=${VG_LOG}ssh-keygen.%p $SSHKEYGEN"
-		SFTP="$VG --log-file=${VG_LOG}sftp.%p ${SFTP}"
-		SCP="$VG --log-file=${VG_LOG}scp.%p $SCP"
+		IRONSFTP="$VG --log-file=${VG_LOG}ironsftp.%p ${IRONSFTP}"
 		cat > $OBJ/valgrind-sftp-server.sh << EOF
 #!/bin/sh
 exec $VG --log-file=${VG_LOG}sftp-server.%p $SFTPSERVER "\$@"

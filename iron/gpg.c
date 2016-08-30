@@ -68,9 +68,8 @@ static int      inited = 0;                 //  Indicates that process has initi
  *  Set user paths
  *
  *  Given a directory path that should include the desired user name (i.e /tmp/ironssh/regress/pokey),
- *  set up the user login and the paths to the directory containing the user's RSA key and the directory where the
- *  new ironcore keys are stored. For the example path, sets the user_login to pokey, the user_ssh_dir to
- *  <path>/.ssh, and the user_ironcore_dir to <path>/.ssh/ironcore.
+ *  set the paths to the dirctory containing the user's RSA key and the directory where the new ironcore keys
+ *  are stored. Strip the user name, append .ssh to that path for the .ssh dir, then append ironcore to that.
  *
  *  This is intended primarily for testing purposes.
  *
