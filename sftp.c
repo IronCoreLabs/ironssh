@@ -2684,7 +2684,7 @@ main(int argc, char **argv)
 		//  The .pubkey file wasn't on the server, or the user wants to generate local keys anyway.
 		if (iron_generate_keys() < 0) fatal("Unable to start.");
 	} else {
-		strcpy(remote_pubkey, IRON_PUBKEY_FNAME);
+		strlcat(remote_pubkey, IRON_PUBKEY_FNAME, sizeof(remote_pubkey));
 	}
    
 	//  Local keys available - upload the user's pubkey file to the server. We do this unconditionally
