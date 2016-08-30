@@ -35,16 +35,44 @@
 #include "iron-common.h"
 #include "iron-gpg.h"
 
+
+static char * __progname;
+
+static void
+usage(void)
+{
+    fprintf(stderr, "\nUsage: %s [-T test_dir] <infile>\n\n", __progname);
+    exit(1);
+}
+
 int
 main(int argc, char **argv)
 {
+    __progname = argv[0];
+
     if (argc < 2) {
-        fprintf(stderr, "\nUsage: %s <infile>\n\n", argv[0]);
-        return -1;
+        usage();
     }
 
-    if (strlen(argv[1]) > PATH_MAX - IRON_SECURE_FILE_SUFFIX_LEN - 6) {
-        fprintf(stderr, "File name \"%s\" is too long.\n\n", argv[1]);
+    extern char * optarg;
+    extern int    optind;
+    char ch;
+    while ((ch = getopt(argc, argv, "T:")) != -1) {
+        switch (ch) {
+            case 'T':
+                iron_set_user(optarg);
+                break;
+            default:
+                usage();
+                break;
+        }
+    }
+
+    if (optind == argc || argc > (optind + 1)) usage();
+    char * in_name = argv[optind];
+
+    if (strlen(in_name) > PATH_MAX - IRON_SECURE_FILE_SUFFIX_LEN - 6) {
+        fprintf(stderr, "File name \"%s\" is too long.\n\n", in_name);
         return -2;
     }
 
@@ -57,14 +85,14 @@ main(int argc, char **argv)
 
     //  Create a <infile>.iron file, so that write_gpg_encrypted_file will generate a different output file.
     char tmp_fname[PATH_MAX];
-    sprintf(tmp_fname, "%s%s", argv[1], IRON_SECURE_FILE_SUFFIX);
+    sprintf(tmp_fname, "%s%s", in_name, IRON_SECURE_FILE_SUFFIX);
     FILE * tmp_file = fopen(tmp_fname, "w");
     fclose(tmp_file);
 
     char enc_fname[PATH_MAX];
-    int outfd = write_gpg_encrypted_file(argv[1], enc_fname);
+    int outfd = write_gpg_encrypted_file(in_name, enc_fname);
     if (outfd < 0) {
-        fprintf(stderr, "Unable to write encrypted file for input file \"%s\"\n\n", argv[1]);
+        fprintf(stderr, "Unable to write encrypted file for input file \"%s\"\n\n", in_name);
         return -5;
     }
     close(outfd);
@@ -72,16 +100,16 @@ main(int argc, char **argv)
     char dec_fname[PATH_MAX];
     int decfd = write_gpg_decrypted_file(enc_fname, dec_fname);
     if (decfd < 0) {
-        fprintf(stderr, "Unable to write decrypted file for input file \"%s\"\n\n", argv[1]);
+        fprintf(stderr, "Unable to write decrypted file for input file \"%s\"\n\n", in_name);
         return -6;
     }
     close(decfd);
 
     char cmp_cmd[512];
-    snprintf(cmp_cmd, 511, "cmp %s %s", argv[1], dec_fname);
+    snprintf(cmp_cmd, 511, "cmp %s %s", in_name, dec_fname);
     int rv = system(cmp_cmd);
     if (rv != 0) {
-        fprintf(stderr, "decrypted file did not match original input file \"%s\"\n\n", argv[1]);
+        fprintf(stderr, "decrypted file did not match original input file \"%s\"\n\n", in_name);
     }
     if (unlink(tmp_fname) < 0) {
         fprintf(stderr, "unable to unlink \"%s\"\n\n", tmp_fname);

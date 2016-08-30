@@ -11,7 +11,7 @@ fail ()
 
 encode_decode ()
 {
-        ./enc-dec-file $@ > /dev/null 2> /dev/null
+        ./enc-dec-file -T ${OBJ}/gumby $@ > /dev/null 2> /dev/null
         r=$?
         if [ $r -ne 0 ]; then
                 fail "enc-dec-file failed on file $@ with $r"
