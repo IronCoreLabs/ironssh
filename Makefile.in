@@ -65,7 +65,7 @@ MANFMT=@MANFMT@
 TARGETS=ssh$(EXEEXT) sshd$(EXEEXT) ssh-add$(EXEEXT) ssh-keygen$(EXEEXT) ssh-keyscan${EXEEXT} ssh-keysign${EXEEXT} ssh-pkcs11-helper$(EXEEXT) ssh-agent$(EXEEXT) scp$(EXEEXT) sftp-server$(EXEEXT) sftp$(EXEEXT)
 
 # *** ICL Modification ***
-TARGETS += ironsftp$(EXEEXT)
+IRON_TARGETS = ironsftp$(EXEEXT)
 IRON_OBJS = \
 	iron/gpg.o iron/gpg-key.o iron/gpg-keyfile.o iron/gpg-packet.o \
 	iron/gpg-trustdb.o iron/recipient.o iron/util.o
@@ -148,6 +148,8 @@ PATHSUBS	= \
 FIXPATHSCMD	= $(SED) $(PATHSUBS)
 FIXALGORITHMSCMD= $(SHELL) $(srcdir)/fixalgorithms $(SED) \
 		     @UNSUPPORTED_ALGORITHMS@
+
+iron: $(IRON_TARGETS) $(MANPAGES)
 
 all: $(CONFIGFILES) $(MANPAGES) $(TARGETS)
 
