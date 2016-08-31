@@ -309,16 +309,19 @@ else
 	PROTO="2"
 fi
 
-TEST_USERS="gumby pokey mrhand"
+if [ "x$IRON_SLOW_TESTS" != "x" ]; then
+	#  For slow tests, we randomly generate all the keys.
+        echo Generating random keys
+	TEST_USERS="gumby pokey mrhand"
 
-trace "generate keys"
-for u in ${TEST_USERS}; do
-        TEST_DIR=$OBJ/$u
-        rm -rf $TEST_DIR
-        mkdir -p $TEST_DIR/.ssh
+	trace "generate keys"
+	for u in ${TEST_USERS}; do
+		TEST_DIR=$OBJ/$u
+		rm -rf $TEST_DIR
+		mkdir -p $TEST_DIR/.ssh
 
-        # create server config
-        cat << EOF > $TEST_DIR/sshd_config
+		# create server config
+		cat << EOF > $TEST_DIR/sshd_config
         StrictModes		no
         Port			$PORT
         Protocol		$PROTO
@@ -332,15 +335,15 @@ for u in ${TEST_USERS}; do
         Subsystem      sftp     $SFTPSERVER
 EOF
 
-        # This may be necessary if /usr/src and/or /usr/obj are group-writable,
-        # but if you aren't careful with permissions then the unit tests could
-        # be abused to locally escalate privileges.
-        if [ ! -z "$TEST_SSH_UNSAFE_PERMISSIONS" ]; then
-                echo "StrictModes no" >> $TEST_DIR/sshd_config
-        fi
+		# This may be necessary if /usr/src and/or /usr/obj are group-writable,
+		# but if you aren't careful with permissions then the unit tests could
+		# be abused to locally escalate privileges.
+		if [ ! -z "$TEST_SSH_UNSAFE_PERMISSIONS" ]; then
+			echo "StrictModes no" >> $TEST_DIR/sshd_config
+		fi
 
-        # create client config
-        cat << EOF > $TEST_DIR/ssh_config
+		# create client config
+		cat << EOF > $TEST_DIR/ssh_config
 Host *
         Protocol		$PROTO
         Hostname		127.0.0.1
@@ -359,28 +362,35 @@ Host *
         StrictHostKeyChecking	yes
 #	LogLevel		DEBUG3
 EOF
-	# generate user key
-	if [ ! -f $TEST_DIR/.ssh/id_rsa ] || [ ${SSHKEYGEN_BIN} -nt $TEST_DIR/.ssh/id_rsa ]; then
-		rm -f $TEST_DIR/.ssh/id_rsa
-		${SSHKEYGEN} -q -N '' -t rsa  -f $TEST_DIR/.ssh/id_rsa ||\
-			fail "ssh-keygen for id_rsa failed"
-	fi
+		# generate user key
+		if [ ! -f $TEST_DIR/.ssh/id_rsa ] || [ ${SSHKEYGEN_BIN} -nt $TEST_DIR/.ssh/id_rsa ]; then
+			rm -f $TEST_DIR/.ssh/id_rsa
+			${SSHKEYGEN} -q -N '' -t rsa  -f $TEST_DIR/.ssh/id_rsa ||\
+				fail "ssh-keygen for id_rsa failed"
+		fi
 
-	# known hosts file for client
-	(
-		printf 'localhost-with-alias,127.0.0.1,::1 '
-		cat $TEST_DIR/.ssh/id_rsa.pub
-	) >> $TEST_DIR/.ssh/known_hosts
+		# known hosts file for client
+		(
+			printf 'localhost-with-alias,127.0.0.1,::1 '
+			cat $TEST_DIR/.ssh/id_rsa.pub
+		) >> $TEST_DIR/.ssh/known_hosts
 
-	# setup authorized keys
-	cat $TEST_DIR/.ssh/id_rsa.pub >> $TEST_DIR/.ssh/authorized_keys
-	echo IdentityFile $TEST_DIR/.ssh/id_rsa >> $TEST_DIR/ssh_config
+		# setup authorized keys
+		cat $TEST_DIR/.ssh/id_rsa.pub >> $TEST_DIR/.ssh/authorized_keys
+		echo IdentityFile $TEST_DIR/.ssh/id_rsa >> $TEST_DIR/ssh_config
 
-	# use key as host key, too
-	$SUDO cp $TEST_DIR/.ssh/id_rsa $TEST_DIR/.ssh/host.rsa
-	echo HostKey $TEST_DIR/.ssh/host.rsa >> $TEST_DIR/sshd_config
-        chmod 644 $TEST_DIR/.ssh/authorized_keys
-done
+		# use key as host key, too
+		$SUDO cp $TEST_DIR/.ssh/id_rsa $TEST_DIR/.ssh/host.rsa
+		echo HostKey $TEST_DIR/.ssh/host.rsa >> $TEST_DIR/sshd_config
+		chmod 644 $TEST_DIR/.ssh/authorized_keys
+	done
+else
+	#  For the fast tests, we use pregenerated keys. This is to avoid
+	#  situations (like running on Travis) where there is not sufficient
+	#  entropy to generate decent random numbers.
+	tar xf $OBJ/iron-test-users.tar.gz
+fi
+
 
 start_sshd ()
 {

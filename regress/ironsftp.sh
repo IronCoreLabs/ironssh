@@ -4,9 +4,17 @@ tid="basic ironsftp put/get"
 
 TSTFILE=`basename ${COPY}`
 touch -f ${TSTFILE}.empty
-head -c 1 /dev/random > ${TSTFILE}.1B
-head -c 1024 /dev/random > ${TSTFILE}.1KB
-head -c 1048576 /dev/random > ${TSTFILE}.1MB
+if [ "x$IRON_SLOW_TESTS" != "x" ]; then
+	#  For slow tests, we generate random data
+	head -c 1 /dev/random > ${TSTFILE}.1B
+	head -c 1024 /dev/random > ${TSTFILE}.1KB
+	head -c 1048576 /dev/random > ${TSTFILE}.1MB
+else
+	SOURCE_FILE=${BUILDDIR}/libssh.a
+	head -c 1 ${SOURCE_FILE} > ${TSTFILE}.1B
+	head -c 1024 ${SOURCE_FILE} > ${TSTFILE}.1KB
+	head -c 1048576 ${SOURCE_FILE} > ${TSTFILE}.1MB
+fi
 
 IRONSFTPCMDFILE=${OBJ}/batch
 cat >${IRONSFTPCMDFILE} <<EOF
@@ -25,16 +33,16 @@ EOF
 TEST_DIR=$OBJ/gumby
 
 if [ "x$IRON_SLOW_TESTS" != "x" ]; then
-        BUFFERSIZE="5 1000 32000 64000"
-        REQUESTS="1 2 10"
+	BUFFERSIZE="5 1000 32000 64000"
+	REQUESTS="1 2 10"
 else
-        BUFFERSIZE="32000 64000"
-        REQUESTS="10"
+	BUFFERSIZE="32000 64000"
+	REQUESTS="10"
 fi
 
 for B in ${BUFFERSIZE}; do
 	for R in ${REQUESTS}; do
-                verbose "test $tid: buffer_size $B num_requests $R"
+		verbose "test $tid: buffer_size $B num_requests $R"
 		rm -f /tmp/${TSTFILE}.*.iron
 		${IRONSFTP} -D ${SFTPSERVER} -B $B -R $R -b ${IRONSFTPCMDFILE} \
 			-T ${TEST_DIR} localhost:${OBJ} > /dev/null 2>&1
@@ -46,7 +54,7 @@ for B in ${BUFFERSIZE}; do
 			cmp ${TSTFILE}.1B ${TSTFILE}.1B.a || fail "corrupted copy after get"
 			cmp ${TSTFILE}.1KB ${TSTFILE}.1KB.a || fail "corrupted copy after get"
 			cmp ${TSTFILE}.1MB ${TSTFILE}.1MB.a || fail "corrupted copy after get"
-                        rm -f ${TSTFILE}.empty.a ${TSTFILE}.1B.a ${TSTFILE}.1KB.a ${TSTFILE}.1MB.a
+			rm -f ${TSTFILE}.empty.a ${TSTFILE}.1B.a ${TSTFILE}.1KB.a ${TSTFILE}.1MB.a
 		fi
 	done
 done
@@ -54,18 +62,20 @@ done
 rm -f /tmp/${TSTFILE}.*.iron
 rm -f ${TSTFILE}.empty.a ${TSTFILE}.1B.a ${TSTFILE}.1KB.a ${TSTFILE}.1MB.a
 
-#  Now need to generate the ironcore keys for the other test users, pokey and
-#  mrhand.
+if [ "x$IRON_SLOW_TESTS" != "x" ]; then
+	#  Now need to generate the ironcore keys for the other test users,
+	#  pokey and mrhand.
 
-TEST_DIR=$OBJ/pokey
-${IRONSFTP} -D ${SFTPSERVER} -T ${TEST_DIR} localhost:${OBJ} > /dev/null 2>&1 <<EOF
+	TEST_DIR=$OBJ/pokey
+	${IRONSFTP} -D ${SFTPSERVER} -T ${TEST_DIR} localhost:${OBJ} > /dev/null 2>&1 <<EOF
 quit
 EOF
 
-TEST_DIR=$OBJ/mrhand
-${IRONSFTP} -D ${SFTPSERVER} -T ${TEST_DIR} localhost:${OBJ} > /dev/null 2>&1 <<EOF
+	TEST_DIR=$OBJ/mrhand
+	${IRONSFTP} -D ${SFTPSERVER} -T ${TEST_DIR} localhost:${OBJ} > /dev/null 2>&1 <<EOF
 quit
 EOF
+fi
 
 TEST_DIR=$OBJ/gumby
 
@@ -84,7 +94,7 @@ get ${TSTFILE}.1KB.3 ${TSTFILE}.1KB.c
 EOF
 
 ${IRONSFTP} -D ${SFTPSERVER} -b ${IRONSFTPCMDFILE} -T ${TEST_DIR} \
-        localhost:${OBJ} > /dev/null 2>&1
+	localhost:${OBJ} > /dev/null 2>&1
 r=$?
 if [ $r -ne 0 ]; then
 	fail "ironsftp failed with $r"
@@ -102,7 +112,7 @@ get ${TSTFILE}.1KB.2 ${TSTFILE}.1KB.e
 EOF
 
 ${IRONSFTP} -D ${SFTPSERVER} -b ${IRONSFTPCMDFILE} -T ${TEST_DIR} \
-        localhost:${OBJ} > /dev/null 2>&1
+	localhost:${OBJ} > /dev/null 2>&1
 r=$?
 if [ $r -ne 0 ]; then
 	fail "ironsftp failed with $r"
@@ -118,7 +128,7 @@ get ${TSTFILE}.1KB.1 ${TSTFILE}.1KB.f
 EOF
 
 ${IRONSFTP} -D ${SFTPSERVER} -b ${IRONSFTPCMDFILE} -T ${TEST_DIR} \
-        localhost:${OBJ} > /dev/null 2>&1
+	localhost:${OBJ} > /dev/null 2>&1
 r=$?
 if [ $r -ne 0 ]; then
 	fail "ironsftp failed with $r"
