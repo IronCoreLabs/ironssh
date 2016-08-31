@@ -47,7 +47,7 @@ autoreconf
   --with-md5-passwords \
   --with-libedit
 
-make SSH_PROGRAM=%{_bindir}/ssh ironsftp
+make
 
 %install
 rm -rf $RPM_BUILD_ROOT
@@ -55,6 +55,9 @@ rm -rf $RPM_BUILD_ROOT
 make install DESTDIR=$RPM_BUILD_ROOT
 
 perl -pi -e "s|$RPM_BUILD_ROOT||g" $RPM_BUILD_ROOT%{_mandir}/man*/*
+
+%check
+make iron-tests
 
 %clean
 rm -rf $RPM_BUILD_ROOT
@@ -65,7 +68,7 @@ rm -rf $RPM_BUILD_ROOT
 #%attr(0755,root,root) %{_bindir}/ironscp
 #%attr(0644,root,root) %{_mandir}/man1/ironscp.1*
 %attr(0755,root,root) %{_bindir}/ironsftp
-#%attr(0644,root,root) %{_mandir}/man1/ironsft.1*
+%attr(0644,root,root) %{_mandir}/man1/ironsftp.1*
 
 %changelog
 * Mon Aug 22 2016 Patrick Walsh <patrick.walsh@ironcorelabs.com>
