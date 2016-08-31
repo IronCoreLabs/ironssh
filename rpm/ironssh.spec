@@ -47,7 +47,7 @@ autoreconf
   --with-md5-passwords \
   --with-libedit
 
-make
+make ironsftp
 
 %install
 rm -rf $RPM_BUILD_ROOT

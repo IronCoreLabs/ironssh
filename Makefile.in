@@ -317,7 +317,7 @@ distprep: catman-do
 	$(AUTORECONF)
 	-rm -rf autom4te.cache
 
-install: ironsftp install-iron-files
+install: ironsftp $(MANPAGES) install-iron-files
 install-nokeys: $(CONFIGFILES) $(MANPAGES) $(TARGETS) install-files install-sysconf
 install-nosysconf: $(CONFIGFILES) $(MANPAGES) $(TARGETS) install-files
 
@@ -329,7 +329,7 @@ install-iron-files:
 	$(srcdir)/mkinstalldirs $(DESTDIR)$(mandir)
 	$(srcdir)/mkinstalldirs $(DESTDIR)$(mandir)/$(mansubdir)1
 	$(INSTALL) -m 0755 $(STRIP_OPT) ironsftp$(EXEEXT) $(DESTDIR)$(bindir)/ironsftp$(EXEEXT)
-#	$(INSTALL) -m 644 ironsftp.1.out $(DESTDIR)$(mandir)/$(mansubdir)1/ironsftp.1
+	$(INSTALL) -m 644 ironsftp.1.out $(DESTDIR)$(mandir)/$(mansubdir)1/ironsftp.1
 
 install-files:
 	$(srcdir)/mkinstalldirs $(DESTDIR)$(bindir)
