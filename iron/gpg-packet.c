@@ -780,7 +780,7 @@ write_gpg_mdc_packet(FILE * outfile, SHA_CTX * sha_ctx, EVP_CIPHER_CTX * aes_ctx
     SHA1_Update(sha_ctx, input, 2);
     SHA1_Final(input + 2, sha_ctx);
 
-    u_char output[2 * AES_BLOCK_SIZE];
+    u_char output[SHA_DIGEST_LENGTH + 2 + AES_BLOCK_SIZE];
     int num_written;
     EVP_EncryptUpdate(aes_ctx, output, &num_written, input, sizeof(input));
 
