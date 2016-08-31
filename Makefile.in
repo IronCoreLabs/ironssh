@@ -250,7 +250,7 @@ umac128.o:	umac.c
 	    -Dumac_delete=umac128_delete -Dumac_ctx=umac128_ctx
 
 clean:	regressclean
-	rm -f *.o iron/*.o *.a $(TARGETS) logintest config.cache config.log
+	rm -f *.o iron/*.o *.a $(TARGETS) $(IRON_TARGETS) logintest config.cache config.log
 	rm -f *.out core survey
 	rm -f regress/unittests/test_helper/*.a
 	rm -f regress/unittests/test_helper/*.o
@@ -271,7 +271,7 @@ clean:	regressclean
 	(cd openbsd-compat && $(MAKE) clean)
 
 distclean:	regressclean
-	rm -f *.o *.a $(TARGETS) logintest config.cache config.log
+	rm -f *.o *.a $(TARGETS) $(IRON_TARGETS) logintest config.cache config.log
 	rm -f *.out core opensshd.init openssh.xml
 	rm -f Makefile buildpkg.sh config.h config.status
 	rm -f survey.sh openbsd-compat/regress/Makefile *~
