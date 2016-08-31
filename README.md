@@ -1,4 +1,8 @@
+![][logo]
+
 # IronSSH - End-to-end secure file transfer
+
+_An alternative to **sftp** and **scp** that keeps files encrypted after they're uploaded and allows sharing of files with cryptographic enforcement. See the [project homepage][homepage] for more details._
 
 This project is a fork of the *openssh/openssh-portable* project from [OpenSSH](http://openssh.com). While most of the project is unchanged, specific additions have been made to create new executables that provide end-to-end security when transferring files to remote servers.
 
@@ -20,7 +24,7 @@ You are also able to share these secure files with other users. When you connect
 ```
   % ironsftp BigServer
   Connected to BigServer.
-  
+
   ironsftp> showrcpt
   Currently registered recipients:
     gumby
@@ -34,14 +38,14 @@ You are also able to share these secure files with other users. When you connect
     pokey
   ironsftp> put foo
   Uploading foo to /home/gumby/foo.iron
-  ironsftp> 
+  ironsftp>
 ```
 
 The file `foo.iron` on the server is encrypted so that both you and *pokey* can retrieve and decrypt it. Suppose pokey does
 ```
   % ironsftp BigServer
   Connected to BigServer.
-  
+
   ironsftp> get foo
   Fetching /home/pokey/foo.iron to foo.iron
   Data was encrypted to user gumby
@@ -63,3 +67,6 @@ The keys used by **ironsftp** are stored in the same format that GnuPG uses - pu
 ```
   gpg --homedir ~/.ssh/ironcore -d --output foo foo.iron
 ```
+
+[logo]: https://ironcorelabs.com/img/products/ironsftp.png
+[homepage]: https://ironcorelabs.com/products/ironsftp
