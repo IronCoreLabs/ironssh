@@ -25,3 +25,12 @@ To get a new version number started, you need to make an annotated tag and push 
 
 1. `git tag -a "x.y.z" -m "tag comment"`
 2. `git push origin "x.y.z"
+
+## Building on Macs
+
+If you get the error, `tar: Option --exclude-vcs is not supported`, then you need to switch to using `gnu-tar`. You can get creative, or just do this in the session where you will run the `build` commands:
+
+1. `brew install gnu-tar`
+2. `PATH="/usr/local/opt/gnu-tar/libexec/gnubin:$PATH"`
+
+After that you should be good.
