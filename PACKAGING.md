@@ -15,7 +15,7 @@ For local builds, you'll need to have Docker installed. Then follow these steps 
 1. `git clone git@github.com:zmre/build.git`
 2. `git describe --long --always > VERSION`
 3. `./build/build clean`
-4. `./build/build PRODUCT=ironssh centos7 fedora22 fedora23 fedora24 fedora-rawhide debian-stretch ubuntu-wily ubuntu-xenial ubuntu-yakkety`
+4. `./build/build PRODUCT=ironssh centos7 fedora23 fedora24 fedora-rawhide debian-stretch ubuntu-wily ubuntu-xenial ubuntu-yakkety`
 
 Use other platform identifiers as desired.  If all goes well, you'll find your packages under `build/root`
 
