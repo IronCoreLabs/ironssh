@@ -352,13 +352,13 @@ write_encrypted_data_file(FILE * infile, const char * fname, const u_char * sym_
             //  From this point, everything is hashed and encrypted. Start with the random prefix bytes, then the
             //  last two bytes repeated.
             retval = -1;
-            u_char input[128];
-            u_char output[128];
-            randombytes_buf(input, AES_BLOCK_SIZE);
-            input[AES_BLOCK_SIZE] = input[AES_BLOCK_SIZE - 2];
-            input[AES_BLOCK_SIZE + 1] = input[AES_BLOCK_SIZE - 1];
+            u_char random_hdr[AES_BLOCK_SIZE + 2];
+            u_char output[GPG_MAX_KEY_SIZE + 64];   // Room for data signature packet header and body
+            randombytes_buf(random_hdr, AES_BLOCK_SIZE);
+            random_hdr[AES_BLOCK_SIZE] = random_hdr[AES_BLOCK_SIZE - 2];
+            random_hdr[AES_BLOCK_SIZE + 1] = random_hdr[AES_BLOCK_SIZE - 1];
 
-            u_char * outp = output + iron_hashcrypt(&mdc_ctx, NULL, &aes_ctx, input, AES_BLOCK_SIZE + 2, output);
+            u_char * outp = output + iron_hashcrypt(&mdc_ctx, NULL, &aes_ctx, random_hdr, sizeof(random_hdr), output);
 
             //  Add the one pass signature packet.
             outp += iron_hashcrypt(&mdc_ctx, NULL, &aes_ctx, ops_hdr, ops_hdr_len, outp);
