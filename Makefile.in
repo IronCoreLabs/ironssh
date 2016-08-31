@@ -633,6 +633,7 @@ iregress-prep:
 	    ln -s `cd $(srcdir) && pwd`/regress/Makefile `pwd`/regress/Makefile
 
 iregress-binaries: \
+	ironsftp$(EXEEXT) \
 	sftp-server$(EXEEXT) \
 	regress/enc-dec-file$(EXEEXT) \
 	regress/unittests/irongpg/test_irongpg$(EXEEXT)
@@ -641,6 +642,7 @@ iron-tests: iregress-prep iregress-binaries
 	BUILDDIR=`pwd`; \
 	TEST_SSH_IRONSFTP="$${BUILDDIR}/ironsftp"; \
 	TEST_SSH_SSHD="$${BUILDDIR}/sshd"; \
+	TEST_SSH_SFTPSERVER="$${BUILDDIR}/sftp-server"; \
 	cd $(srcdir)/regress || exit $$?; \
 	$(MAKE) \
 		.OBJDIR="$${BUILDDIR}/regress" \
@@ -651,10 +653,32 @@ iron-tests: iregress-prep iregress-binaries
 		TEST_ENV=MALLOC_OPTIONS="@TEST_MALLOC_OPTIONS@" \
 		TEST_MALLOC_OPTIONS="@TEST_MALLOC_OPTIONS@" \
 		TEST_SSH_IRONSFTP="$${TEST_SSH_IRONSFTP}" \
+		TEST_SSH_SFTPSERVER="$${TEST_SSH_SFTPSERVER}" \
 		TEST_SSH_SSHD="$${TEST_SSH_SSHD}" \
 		TEST_SHELL="${TEST_SHELL}" \
 		EXEEXT="$(EXEEXT)" \
 		$@ && echo all tests passed
+
+iron-slow-tests: iregress-prep iregress-binaries
+	BUILDDIR=`pwd`; \
+	TEST_SSH_IRONSFTP="$${BUILDDIR}/ironsftp"; \
+	TEST_SSH_SSHD="$${BUILDDIR}/sshd"; \
+	TEST_SSH_SFTPSERVER="$${BUILDDIR}/sftp-server"; \
+	cd $(srcdir)/regress || exit $$?; \
+	$(MAKE) \
+		.OBJDIR="$${BUILDDIR}/regress" \
+		.CURDIR="`pwd`" \
+		IRON_SLOW_TESTS="1" \
+		BUILDDIR="$${BUILDDIR}" \
+		OBJ="$${BUILDDIR}/regress/" \
+		PATH="$${BUILDDIR}:$${PATH}" \
+		TEST_ENV=MALLOC_OPTIONS="" \
+		TEST_MALLOC_OPTIONS="" \
+		TEST_SSH_IRONSFTP="$${TEST_SSH_IRONSFTP}" \
+		TEST_SSH_SSHD="$${TEST_SSH_SSHD}" \
+		TEST_SHELL="${TEST_SHELL}" \
+		EXEEXT="$(EXEEXT)" \
+		iron-tests && echo all tests passed
 
 UNITTESTS_TEST_IRONGPG_OBJS=\
 	regress/unittests/irongpg/tests.o \

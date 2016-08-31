@@ -36,11 +36,17 @@ done
 head -c 1048576 /dev/random  > ${COPY}.1M
 encode_decode ${COPY}.1M
 
-head -c 2147482000 /dev/zero > ${COPY}.2G
-encode_decode ${COPY}.2G
+if [ "x$IRON_SLOW_TESTS" != "x" ]; then
+        head -c 2147482000 /dev/zero > ${COPY}.2G
+        encode_decode ${COPY}.2G
+fi
 
 # Now just run through several files of random data.
-limit=50
+if [ "x$IRON_SLOW_TESTS" != "x" ]; then
+        limit=250
+else
+        limit=25
+fi
 file_ct=1
 while [ $file_ct -le $limit ]; do
         head -c 32768 /dev/random  > ${COPY}.32k.${file_ct}

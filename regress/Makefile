@@ -19,7 +19,7 @@ iron-exec: ${ITESTS:=.sh}
 	@if [ "x$?" = "x" ]; then exit 0; fi; \
 	for TEST in ""$?; do \
 		echo "run test $${TEST}" ... 1>&2; \
-		(env SUDO="${SUDO}" TEST_ENV=${TEST_ENV} ${TEST_SHELL} ${.CURDIR}/iron-test-exec.sh ${.OBJDIR} ${.CURDIR}/$${TEST}) || exit $$?; \
+		(env SUDO="${SUDO}" TEST_ENV=${TEST_ENV} IRON_SLOW_TESTS=${IRON_SLOW_TESTS} ${TEST_SHELL} ${.CURDIR}/iron-test-exec.sh ${.OBJDIR} ${.CURDIR}/$${TEST}) || exit $$?; \
 	done
 
 

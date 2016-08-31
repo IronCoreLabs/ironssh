@@ -24,8 +24,13 @@ EOF
 
 TEST_DIR=$OBJ/gumby
 
-BUFFERSIZE="5 1000 32000 64000"
-REQUESTS="1 2 10"
+if [ "x$IRON_SLOW_TESTS" != "x" ]; then
+        BUFFERSIZE="5 1000 32000 64000"
+        REQUESTS="1 2 10"
+else
+        BUFFERSIZE="32000 64000"
+        REQUESTS="10"
+fi
 
 for B in ${BUFFERSIZE}; do
 	for R in ${REQUESTS}; do
