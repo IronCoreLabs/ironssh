@@ -782,8 +782,10 @@ static int
 create_iron_dirs(void)
 {
     if (make_ironcore_subdir(NULL) == 0 && make_ironcore_subdir(IRON_PUBKEY_SUBDIR) == 0 &&
-            make_ironcore_subdir(GPG_SECKEY_SUBDIR) == 0) return 0;
-    else return -1;
+            make_ironcore_subdir(IRON_PUBKEYIDX_SUBDIR) == 0 && 
+            make_ironcore_subdir(GPG_SECKEY_SUBDIR) == 0) {
+        return 0;
+    } else return -1;
 }
 
 /**
@@ -893,7 +895,7 @@ iron_check_keys(void)
 
     int retval = -1;
     char file_name[PATH_MAX];
-    snprintf(file_name, PATH_MAX, "%s%s%s", iron_user_ssh_dir(), IRONCORE_SUBDIR, GPG_PUBLIC_KEY_FNAME);
+    snprintf(file_name, PATH_MAX, "%s%s", iron_user_ironcore_dir(), GPG_PUBLIC_KEY_FNAME);
 
     if (access(file_name, F_OK) == 0) {
         snprintf(file_name, PATH_MAX, "%s%s", iron_user_ironcore_dir(), GPG_SECKEY_SUBDIR);

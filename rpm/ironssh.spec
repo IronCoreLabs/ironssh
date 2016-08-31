@@ -56,6 +56,9 @@ make install DESTDIR=$RPM_BUILD_ROOT
 
 perl -pi -e "s|$RPM_BUILD_ROOT||g" $RPM_BUILD_ROOT%{_mandir}/man*/*
 
+%check
+make iron-tests
+
 %clean
 rm -rf $RPM_BUILD_ROOT
 

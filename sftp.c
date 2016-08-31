@@ -2444,6 +2444,9 @@ main(int argc, char **argv)
 	size_t copy_buffer_len = DEFAULT_COPY_BUFLEN;
 	size_t num_requests = DEFAULT_NUM_REQUESTS;
 	long long limit_kbps = 0;
+#ifdef IRONCORE
+    char *test_dir = NULL;
+#endif
 
 	ssh_malloc_init();	/* must be called before any mallocs */
 	/* Ensure that fds 0, 1 and 2 are open or directed to /dev/null */
@@ -2463,7 +2466,11 @@ main(int argc, char **argv)
 	infile = stdin;
 
 	while ((ch = getopt(argc, argv,
+#ifdef IRONCORE
+	    "1246afhpqrvCc:D:i:l:o:s:S:b:B:F:P:R:T:")) != -1) {
+#else
 	    "1246afhpqrvCc:D:i:l:o:s:S:b:B:F:P:R:")) != -1) {
+#endif
 		switch (ch) {
 		/* Passed through to ssh(1) */
 		case '4':
@@ -2555,6 +2562,12 @@ main(int argc, char **argv)
 			ssh_program = optarg;
 			replacearg(&args, 0, "%s", ssh_program);
 			break;
+#ifdef IRONCORE
+		case 'T':
+			test_dir = optarg;
+			iron_set_user(optarg);
+			break;
+#endif
 		case 'h':
 		default:
 			usage();
@@ -2632,21 +2645,32 @@ main(int argc, char **argv)
 		fatal("Unable to intialize secure file sharing.");
 	}
 	iron_set_host(host);
+
+	char remote_pubkey[PATH_MAX];
+	*remote_pubkey = '\0';
+
 	/*  Save off the home directory on the remote machine, in case we need it to find other users' pubkeys.  */
-	char * remote_path = do_realpath(conn, ".");
-	if (remote_path == NULL)
-		fatal("Can't determine remote home directory.");
-	add_home_dir_root(remote_path);
+	if (test_dir == NULL) {
+		char * remote_path = do_realpath(conn, ".");
+		if (remote_path == NULL) fatal("Can't determine remote home directory.");
+		add_home_dir_root(remote_path);
+	} else {
+		strlcpy(remote_pubkey, test_dir, sizeof(remote_pubkey));
+		if (remote_pubkey[strlen(remote_pubkey) - 1] != '/') strlcat(remote_pubkey, "/", sizeof(remote_pubkey));
+		add_home_dir_root(remote_pubkey);
+	}
 
 	/*  Generate the GPG key files if they aren't there already.  */
 	int keys_available = iron_check_keys();
 	if (keys_available < 0) {
 		fatal("Unable to start.");
 	}
-   
+
 	if (keys_available == 0) {
 		glob_t g;
-		if (remote_glob(conn, IRON_PUBKEY_FNAME, GLOB_MARK, NULL, &g) == 0) {
+		strlcat(remote_pubkey, IRON_PUBKEY_FNAME, sizeof(remote_pubkey));
+
+		if (remote_glob(conn, remote_pubkey, GLOB_MARK, NULL, &g) == 0) {
 			logit("WARNING: you don't have IronCore keys available on the local machine, but\n"
 				  "there is a %s file on the server, so you probably already generated\n"
 				  "the IronCore keys on a different machine.\n"
@@ -2659,14 +2683,16 @@ main(int argc, char **argv)
 
 		//  The .pubkey file wasn't on the server, or the user wants to generate local keys anyway.
 		if (iron_generate_keys() < 0) fatal("Unable to start.");
+	} else {
+		strlcat(remote_pubkey, IRON_PUBKEY_FNAME, sizeof(remote_pubkey));
 	}
    
 	//  Local keys available - upload the user's pubkey file to the server. We do this unconditionally
 	//  because it's as efficient as checking whether the remote file is there or not.
 	const char * fname = iron_user_pubkey_file();
-	if (do_upload(conn, fname, IRON_PUBKEY_FNAME, 1 /*preserve times*/, 0 /*no resume*/,
+	if (do_upload(conn, fname, remote_pubkey, 1 /*preserve times*/, 0 /*no resume*/,
 		   			   0 /*no sync*/, 0 /*no encrypt*/) != 0) {
-		fatal("Unable to upload %s to %s on the server.", fname, IRON_PUBKEY_FNAME);
+		fatal("Unable to upload %s to %s on the server.", fname, remote_pubkey);
 	}
 #endif
 

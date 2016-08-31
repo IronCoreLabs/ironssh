@@ -51,17 +51,72 @@
 
 
 
-static int      gpg_now;        //  Everything that timestamps a packet during the same "transaction" should
-                                //  use this time, so they all get timestamped the same.
-static char   * user_login;     //  Stores the login of the user running the process. Set at initialization.
+static int      gpg_now;                    //  Everything that timestamps a packet during the same "transaction"
+                                            //  should use this time, so they all get timestamped the same
 
-static char   * user_ssh_dir;   //  The ~/.ssh directory for user_login.
+static char   * user_login = NULL;          //  Stores login of user running process. Set at initialization
 
-static char   * user_ironcore_dir;  //  The ~/.ssh/ironcore directory for user_login.
+static char   * user_ssh_dir = NULL;        //  The $(user_dir)/.ssh/ directory for user_login
+static char   * user_ironcore_dir = NULL;   //  The $(user_ssh_dir)/ironcore/ directory for user_login
 
-static char   * hostname = "";  //  Name of the host to which ironsftp connected
+static char   * hostname = "";              //  Name of the host to which ironsftp connected
 
-static int      inited = 0;     //  Indicates that the process has initialized everything needed for IronSFTP
+static int      inited = 0;                 //  Indicates that process has initialized everything needed for IronSFTP
+
+
+/**
+ *  Set user paths
+ *
+ *  Given a directory path that should include the desired user name (i.e /tmp/ironssh/regress/pokey),
+ *  set the paths to the dirctory containing the user's RSA key and the directory where the new ironcore keys
+ *  are stored. Strip the user name, append .ssh to that path for the .ssh dir, then append ironcore to that.
+ *
+ *  This is intended primarily for testing purposes.
+ *
+ *  @param path The base path for the user
+ */
+static void
+iron_set_user_dir(const char * path)
+{
+    if (user_ssh_dir != NULL) free(user_ssh_dir);
+    if (user_ironcore_dir != NULL) free(user_ironcore_dir);
+
+    char lpath[PATH_MAX];
+    strlcpy(lpath, path, sizeof(lpath));
+    if (lpath[strlen(lpath) - 1] != '/') strlcat(lpath, "/", PATH_MAX);
+    strlcat(lpath, IRON_SSH_DIR, sizeof(lpath));
+    user_ssh_dir = xstrdup(lpath);
+    strlcat(lpath, IRONCORE_SUBDIR, sizeof(lpath));
+    user_ironcore_dir = xstrdup(lpath);
+}
+
+/**
+ *  Set login and user paths
+ *
+ *  Given a directory path that should include the desired user name (i.e /tmp/ironssh/regress/pokey),
+ *  set up the user login and the paths to the directory containing the user's RSA key and the directory where the
+ *  new ironcore keys are stored. For the example path, sets the user_login to pokey, the user_ssh_dir to
+ *  <path>/.ssh, and the user_ironcore_dir to <path>/.ssh/ironcore.
+ *
+ *  This is intended primarily for testing purposes.
+ *
+ *  @param path The base path for the user
+ */
+void
+iron_set_user(const char * path)
+{
+    if (user_login != NULL) free(user_login);
+
+    char lpath[PATH_MAX];
+    strlcpy(lpath, path, sizeof(lpath));
+    if (lpath[strlen(lpath) - 1] == '/') lpath[strlen(lpath) - 1] = '\0';
+
+    char * uname = strrchr(lpath, '/');
+    if (uname != NULL) user_login = xstrdup(uname + 1);
+    else user_login = NULL;
+
+    iron_set_user_dir(path);
+}
 
 /**
  *  Initialize the needful.
@@ -80,17 +135,17 @@ iron_initialize(void)
             fatal("Couldn't initialize sodium library");
         }
 
-        struct passwd * user_pw = getpwuid(getuid());
-        if (user_pw == NULL) {
-            retval = -1;
-            fatal("Unable to determine current user's login\n");
-        } else {
-            user_login = xstrdup(user_pw->pw_name);
-            char path[PATH_MAX];
-            sprintf(path, "%s/.ssh/", user_pw->pw_dir);
-            user_ssh_dir = xstrdup(path);
-            strlcat(path, IRONCORE_SUBDIR, PATH_MAX);
-            user_ironcore_dir = xstrdup(path);
+        if (user_login == NULL) {
+            struct passwd * user_pw = getpwuid(getuid());
+            if (user_pw == NULL) {
+                retval = -1;
+                fatal("Unable to determine current user's login\n");
+            } else {
+                user_login = xstrdup(user_pw->pw_name);
+                if (user_ssh_dir == NULL)  {
+                    iron_set_user_dir(user_pw->pw_dir);
+                }
+            }
         }
         inited = 1;
     }
