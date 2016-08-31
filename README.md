@@ -68,5 +68,10 @@ The keys used by **ironsftp** are stored in the same format that GnuPG uses - pu
   gpg --homedir ~/.ssh/ironcore -d --output foo foo.iron
 ```
 
+## Installation
+
+See the [project page installation section][homepageinstall] for supported operating systems and installation details.
+
 [logo]: https://ironcorelabs.com/img/products/ironsftp.png
 [homepage]: https://ironcorelabs.com/products/ironsftp
+[homepageinstall]: https://ironcorelabs.com/products/ironsftp#installation
