@@ -167,7 +167,7 @@ iron_put_bignum(struct sshbuf * buf, const BIGNUM * bignum)
 }
 
 /**
- *  Write byte array to buffer as S-expression.
+ *  Write byte array to buffer as S-expression
  *
  *  Format an array of bytes as a GPG S-expression (length in bytes, as an ASCII string, followed by ':', then
  *  the byte array).
@@ -186,7 +186,7 @@ iron_put_num_sexpr(struct sshbuf * buf, const u_char * bstr, int bstr_len)
         bstr_len++;
     }
 
-    char tmp[32];
+    char tmp[16];
     int tlen = sprintf(tmp, "%d:", bstr_len);
     sshbuf_put(buf, tmp, tlen);
 
@@ -286,36 +286,6 @@ iron_hashcrypt(SHA_CTX * mdc_ctx, SHA256_CTX * sig_ctx, EVP_CIPHER_CTX * aes_ctx
     else return -1;
 }
 
-
-/**
- *  Sign a hash using an RSA key.
- *
- *  Computes the RSA signature of a hash given the RSA signing key (needs to have secret key populated).
- *
- *  @param digest Byte array containing hash
- *  @param digest_len Num bytes in digest
- *  @param key RSA key to use to sign hash
- *  @return BIGNUM * bignum containing the computed signature, NULL if error
- */
-BIGNUM *
-iron_compute_rsa_signature(const u_char * digest, size_t digest_len, const Key * key)
-{
-
-    size_t rsa_len = RSA_size(key->rsa);
-    unsigned int len;
-    u_char * tmp_sig = malloc(rsa_len);
-
-    if (RSA_sign(NID_sha256, digest, digest_len, tmp_sig, &len, key->rsa) != 1) {
-        return NULL;
-    } else {
-        BIGNUM * sig = BN_new();
-        BN_bin2bn(tmp_sig, len, sig);
-        free(tmp_sig);
-        return sig;
-    }
-
-}
-
 /**
  *  Check the directory/file name to see if it ends with the .iron sharing suffix.
  *
@@ -334,4 +304,25 @@ iron_extension_offset(const char * name)
         }
 
         return retval;
+}
+
+
+/**
+ *  Check user input for affirmative answer.
+ *
+ *  Read user input and check that the first non-whitespace character is either 'Y' or 'y'.
+ *  Reads one line of input.
+ *
+ *  @return true (non-zero) if user answered in the affirmative, false (0) otherwise
+ */
+int
+iron_get_user_confirmation(void)
+{
+	char line[30];
+	fgets(line, sizeof(line), stdin);
+	char yesno = line[strspn(line, " \t")];		//  Skips leading white space
+	while (line[strlen(line) - 1] != '\n') {
+		fgets(line, sizeof(line), stdin);
+	}
+	return (yesno == 'y' || yesno == 'Y');
 }

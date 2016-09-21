@@ -43,6 +43,10 @@
 //  If you have a key fingerprint, this macro gives you a pointer to the key ID that corresponds to the FP
 #define GPG_KEY_ID_FROM_FP(fp) ((fp) + GPG_KEY_ID_OFFSET)
 
+//  Size of a passphrase generated to secure the GPG keys
+#define PRE_ENC_PPHRASE_BYTES   33      //  Number of bytes of signature to use as passphrase (pre-base64 encoding)
+#define PPHRASE_LEN             4 * ((PRE_ENC_PPHRASE_BYTES + 2) / 3) + 1       //  +1 for null terminator
+
 #define IRON_SSH_DIR            ".ssh/"         //  subdir of ~ that holds ssh keys
 #define IRONCORE_SUBDIR         "ironcore/"     //  subdir of ~/.ssh that holds all IronCore files
 

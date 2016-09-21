@@ -23,13 +23,6 @@ CYGWIN*)
 	os=cygwin
 	;;
 esac
-
-if [ ! -z "$TEST_SSH_PORT" ]; then
-	PORT="$TEST_SSH_PORT"
-else
-	PORT=4242
-fi
-
 if [ -x /usr/ucb/whoami ]; then
 	USER=`/usr/ucb/whoami`
 elif whoami >/dev/null 2>&1; then
@@ -69,18 +62,10 @@ unset SSH_AUTH_SOCK
 SRC=`dirname ${SCRIPT}`
 
 # defaults
-SSH=/usr/local/bin/ssh
-SSHD=sshd
 SSHKEYGEN=ssh-keygen
 IRONSFTP=ironsftp
 SFTPSERVER=sftp-server
 
-if [ "x$TEST_SSH_SSH" != "x" ]; then
-	SSH="${TEST_SSH_SSH}"
-fi
-if [ "x$TEST_SSH_SSHD" != "x" ]; then
-	SSHD="${TEST_SSH_SSHD}"
-fi
 if [ "x$TEST_SSH_SSHKEYGEN" != "x" ]; then
 	SSHKEYGEN="${TEST_SSH_SSHKEYGEN}"
 fi
@@ -91,15 +76,7 @@ if [ "x$TEST_SSH_SFTPSERVER" != "x" ]; then
 	SFTPSERVER="${TEST_SSH_SFTPSERVER}"
 fi
 
-# Path to sshd must be absolute for rexec
-case "$SSHD" in
-/*) ;;
-*) SSHD=`which $SSHD` ;;
-esac
-
 # Record the actual binaries used.
-SSH_BIN=${SSH}
-SSHD_BIN=${SSHD}
 SSHKEYGEN_BIN=${SSHKEYGEN}
 IRONSFTP_BIN=${IRONSFTP}
 SFTPSERVER_BIN=${SFTPSERVER}
@@ -136,33 +113,13 @@ EOF
 fi
 
 # Logfiles.
-# SSH_LOGFILE should be the debug output of ssh(1) only
-# SSHD_LOGFILE should be the debug output of sshd(8) only
 # REGRESS_LOGFILE is the output of the test itself stdout and stderr
-if [ "x$TEST_SSH_LOGFILE" = "x" ]; then
-	TEST_SSH_LOGFILE=$OBJ/ssh.log
-fi
-if [ "x$TEST_SSHD_LOGFILE" = "x" ]; then
-	TEST_SSHD_LOGFILE=$OBJ/sshd.log
-fi
 if [ "x$TEST_REGRESS_LOGFILE" = "x" ]; then
 	TEST_REGRESS_LOGFILE=$OBJ/iron-regress.log
 fi
 
 # truncate logfiles
->$TEST_SSH_LOGFILE
->$TEST_SSHD_LOGFILE
 >$TEST_REGRESS_LOGFILE
-
-# Create wrapper ssh with logging.  We can't just specify "SSH=ssh -E..."
-# because sftp and scp don't handle spaces in arguments.
-SSHLOGWRAP=$OBJ/ssh-log-wrapper.sh
-echo "#!/bin/sh" > $SSHLOGWRAP
-echo "exec ${SSH} -E${TEST_SSH_LOGFILE} "'"$@"' >>$SSHLOGWRAP
-
-chmod a+rx $OBJ/ssh-log-wrapper.sh
-REAL_SSH="$SSH"
-SSH="$SSHLOGWRAP"
 
 # Place to write test data. Tests can assume that $COPY does not exist, and
 # can be written.
@@ -170,7 +127,7 @@ COPY=$OBJ/copy
 rm -f ${COPY}
 
 # these should be used in tests
-export SSH SSHD SSHKEYGEN IRONSFTP SFTPSERVER
+export SSHKEYGEN IRONSFTP SFTPSERVER
 
 # Portable specific functions
 have_prog()
@@ -206,52 +163,15 @@ config_defined ()
 # End of portable specific functions
 
 # helper
-cleanup ()
-{
-	if [ "x$SSH_PID" != "x" ]; then
-		if [ $SSH_PID -lt 2 ]; then
-			echo bad pid for ssh: $SSH_PID
-		else
-			kill $SSH_PID
-		fi
-	fi
-	if [ -f $PIDFILE ]; then
-		pid=`$SUDO cat $PIDFILE`
-		if [ "X$pid" = "X" ]; then
-			echo no sshd running
-		else
-			if [ $pid -lt 2 ]; then
-				echo bad pid for sshd: $pid
-			else
-				$SUDO kill $pid
-				trace "wait for sshd to exit"
-				i=0;
-				while [ -f $PIDFILE -a $i -lt 5 ]; do
-					i=`expr $i + 1`
-					sleep $i
-				done
-				test -f $PIDFILE && \
-				    fatal "sshd didn't exit port $PORT pid $pid"
-			fi
-		fi
-	fi
-}
-
 start_debug_log ()
 {
 	echo "trace: $@" >$TEST_REGRESS_LOGFILE
-	echo "trace: $@" >$TEST_SSH_LOGFILE
-	echo "trace: $@" >$TEST_SSHD_LOGFILE
 }
 
 save_debug_log ()
 {
 	echo $@ >>$TEST_REGRESS_LOGFILE
-	echo $@ >>$TEST_SSH_LOGFILE
-	echo $@ >>$TEST_SSHD_LOGFILE
 	(cat $TEST_REGRESS_LOGFILE; echo) >>$OBJ/failed-regress.log
-	(cat $TEST_SSH_LOGFILE; echo) >>$OBJ/failed-ssh.log
-	(cat $TEST_SSHD_LOGFILE; echo) >>$OBJ/failed-sshd.log
 }
 
 trace ()
@@ -272,7 +192,6 @@ verbose ()
 
 warn ()
 {
-	echo "WARNING: $@" >>$TEST_SSH_LOGFILE
 	echo "WARNING: $@"
 }
 
@@ -293,96 +212,44 @@ fatal ()
 	exit $RESULT
 }
 
-ssh_version ()
-{
-	echo ${SSH_PROTOCOLS} | grep "$1" >/dev/null
-}
-
 RESULT=0
 PIDFILE=$OBJ/pidfile
 
 trap fatal 3 2
 
-if ssh_version 1; then
-	PROTO="2,1"
-else
-	PROTO="2"
-fi
+#  Don't worry about old protocol version 1 stuff
+PROTO="2"
 
 if [ "x$IRON_SLOW_TESTS" != "x" ]; then
 	#  For slow tests, we randomly generate all the keys.
         echo Generating random keys
-	TEST_USERS="gumby pokey mrhand"
+	TEST_USERS="gumby pokey mrbill mrhand"
 
 	trace "generate keys"
 	for u in ${TEST_USERS}; do
 		TEST_DIR=$OBJ/$u
 		rm -rf $TEST_DIR
 		mkdir -p $TEST_DIR/.ssh
+		echo "  for user $u"
+		trace "  for user $u"
+		case $u in
+			"gumby")
+				keytype="rsa"
+				;;
+			"pokey")
+				keytype="dsa"
+				;;
+			"mrbill")
+				keytype="ecdsa"
+				;;
+			"mrhand")
+				keytype="ed25519"
+				;;
+		esac
 
-		# create server config
-		cat << EOF > $TEST_DIR/sshd_config
-        StrictModes		no
-        Port			$PORT
-        Protocol		$PROTO
-        AddressFamily		inet
-        ListenAddress		127.0.0.1
-        PidFile			$PIDFILE
-        AuthorizedKeysFile	$TEST_DIR/.ssh/authorized_keys
-#	LogLevel		DEBUG3
-        AcceptEnv		_XXX_TEST_*
-        AcceptEnv		_XXX_TEST
-        Subsystem      sftp     $SFTPSERVER
-EOF
-
-		# This may be necessary if /usr/src and/or /usr/obj are group-writable,
-		# but if you aren't careful with permissions then the unit tests could
-		# be abused to locally escalate privileges.
-		if [ ! -z "$TEST_SSH_UNSAFE_PERMISSIONS" ]; then
-			echo "StrictModes no" >> $TEST_DIR/sshd_config
-		fi
-
-		# create client config
-		cat << EOF > $TEST_DIR/ssh_config
-Host *
-        Protocol		$PROTO
-        Hostname		127.0.0.1
-        HostKeyAlias		localhost-with-alias
-        Port			$PORT
-        User			$USER
-        GlobalKnownHostsFile	$TEST_DIR/.ssh/known_hosts
-        UserKnownHostsFile	$TEST_DIR/.ssh/known_hosts
-        RSAAuthentication	yes
-        PubkeyAuthentication	yes
-        ChallengeResponseAuthentication	no
-        HostbasedAuthentication	no
-        PasswordAuthentication	no
-        RhostsRSAAuthentication	no
-        BatchMode		yes
-        StrictHostKeyChecking	yes
-#	LogLevel		DEBUG3
-EOF
 		# generate user key
-		if [ ! -f $TEST_DIR/.ssh/id_rsa ] || [ ${SSHKEYGEN_BIN} -nt $TEST_DIR/.ssh/id_rsa ]; then
-			rm -f $TEST_DIR/.ssh/id_rsa
-			${SSHKEYGEN} -q -N '' -t rsa  -f $TEST_DIR/.ssh/id_rsa ||\
-				fail "ssh-keygen for id_rsa failed"
-		fi
-
-		# known hosts file for client
-		(
-			printf 'localhost-with-alias,127.0.0.1,::1 '
-			cat $TEST_DIR/.ssh/id_rsa.pub
-		) >> $TEST_DIR/.ssh/known_hosts
-
-		# setup authorized keys
-		cat $TEST_DIR/.ssh/id_rsa.pub >> $TEST_DIR/.ssh/authorized_keys
-		echo IdentityFile $TEST_DIR/.ssh/id_rsa >> $TEST_DIR/ssh_config
-
-		# use key as host key, too
-		$SUDO cp $TEST_DIR/.ssh/id_rsa $TEST_DIR/.ssh/host.rsa
-		echo HostKey $TEST_DIR/.ssh/host.rsa >> $TEST_DIR/sshd_config
-		chmod 644 $TEST_DIR/.ssh/authorized_keys
+		${SSHKEYGEN} -q -N '' -t $keytype  -f $TEST_DIR/.ssh/id_$keytype ||\
+				fail "ssh-keygen for user $u, id_$keytype failed"
 	done
 else
 	#  For the fast tests, we use pregenerated keys. This is to avoid
@@ -392,30 +259,8 @@ else
 fi
 
 
-start_sshd ()
-{
-	# start sshd
-	$SUDO ${SSHD} -f $OBJ/"$1"/sshd_config -t || fatal "sshd_config broken"
-	$SUDO ${SSHD} -f $OBJ/"$1"/sshd_config -E$TEST_SSHD_LOGFILE
-
-	trace "wait for sshd"
-	i=0;
-	while [ ! -f $PIDFILE -a $i -lt 10 ]; do
-		i=`expr $i + 1`
-		sleep $i
-	done
-
-	test -f $PIDFILE || fatal "no sshd running on port $PORT"
-}
-
 # source test body
 . $SCRIPT
-
-# kill sshd
-# cleanup
-rm -rf $OBJ/gumby
-rm -rf $OBJ/pokey
-rm -rf $OBJ/mrhand
 
 if [ $RESULT -eq 0 ]; then
 	verbose ok $tid

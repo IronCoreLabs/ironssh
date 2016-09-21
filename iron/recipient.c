@@ -99,7 +99,7 @@ iron_get_recipient_keys(const char * login)
  *  Return the entry for a specific key ID.
  *
  *  The recipient entry has all the user's public key information. It will return the first entry that
- *  matches the key ID in either the cv25519 or the RSA key ID.
+ *  matches the key ID in one of the ed25519, cv25519, or RSA key IDs.
  *
  *  @param key_id ID whose entry to fetch
  *  @returns const gpg_public_key * Pointer to entry for the user, NULL if keys couldn't be retrieved
@@ -111,8 +111,9 @@ iron_get_recipient_keys_by_key_id(const char * key_id)
     const gpg_public_key * recip;
     int num_recip = iron_get_recipients(&recip);
     int ct = 0;
-    while (ct < num_recip && memcmp(key_id, GPG_KEY_ID_FROM_FP(recip->fp), GPG_KEY_ID_LEN) != 0 &&
-           memcmp(key_id, GPG_KEY_ID_FROM_FP(recip->signer_fp), GPG_KEY_ID_LEN) != 0) {
+    while (ct < num_recip && memcmp(key_id, GPG_KEY_ID_FROM_FP(recip->sign_fp), GPG_KEY_ID_LEN) != 0 &&
+           memcmp(key_id, GPG_KEY_ID_FROM_FP(recip->enc_fp), GPG_KEY_ID_LEN) != 0 &&
+           memcmp(key_id, GPG_KEY_ID_FROM_FP(recip->rsa_fp), GPG_KEY_ID_LEN) != 0) {
         recip++;
         ct++;
     }
@@ -125,8 +126,7 @@ iron_get_recipient_keys_by_key_id(const char * key_id)
  *  Add a recipient to registered list.
  *
  *  Add an entry for the specified user to the list of registered recipients. Requires that the user
- *  has a ~<login>/.pubkey file, or that we can access the user's ~<login>/.ssh/pubring.gpg file. (The
- *  latter probably only happens if the login is the user running the process.)
+ *  has a ~<login>/.ironpubkey file, or that we can access current user's ~/.ssh/ironcore/pubring.gpg file.
  *
  *  We have a lmit on the number that can be added - attempting to add one more is an error.
  *
@@ -154,14 +154,8 @@ iron_add_recipient(const char * login)
     if (retval == 0) {
         if (num_recipients < IRON_MAX_RECIPIENTS) {
             gpg_public_key * new_ent = recipient_list + num_recipients;
-            strncpy(new_ent->login, login, IRON_MAX_LOGIN_LEN);
-            new_ent->login[IRON_MAX_LOGIN_LEN] = 0;
-            size_t key_len;
-            bzero(&(new_ent->rsa_key), sizeof(new_ent->rsa_key));
-            new_ent->rsa_key.type = KEY_RSA;
-            new_ent->rsa_key.ecdsa_nid  = -1;
-            if (get_gpg_public_keys(login, &(new_ent->rsa_key), new_ent->signer_fp, new_ent->key, &key_len,
-                                    new_ent->fp) == 0) {
+            bzero(new_ent, sizeof(gpg_public_key));
+            if (get_gpg_public_keys(login, new_ent) == 0) {
                 if (strcmp(login, iron_user_login()) != 0) iron_index_public_keys(new_ent);
                 num_recipients++;
             } else {
@@ -207,7 +201,7 @@ iron_remove_recipient(const char * login)
 
         if (retval == 0) {
             if (i != num_recipients - 1) {
-                memmove(recipient_list + i, recipient_list + i + 1, num_recipients - i - 1);
+                memmove(recipient_list + i, recipient_list + i + 1, (num_recipients - i - 1) * sizeof(gpg_public_key));
             }
             num_recipients--;
         } else {

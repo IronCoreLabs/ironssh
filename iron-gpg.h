@@ -41,10 +41,11 @@ extern int  iron_initialize(void);
 extern void iron_set_user(const char * path);
 extern void iron_set_host(const char * hostname);
 extern int  iron_check_keys(void);
-extern int  iron_generate_keys(void);
+extern int  iron_generate_keys(const char * identity_file_path);
 
 extern const char * iron_host(void);
 extern const char * iron_user_login(void);
+extern const char * iron_user_dir(void);
 extern const char * iron_user_ssh_dir(void);
 extern const char * iron_user_ironcore_dir(void);
 extern const char * iron_user_pubkey_file(void);
@@ -60,5 +61,6 @@ extern int  iron_add_recipient(const char * login);
 extern int  iron_remove_recipient(const char * login);
 extern int  iron_index_user(const char * login);
 extern int  iron_extension_offset(const char * name);
+extern int  iron_get_user_confirmation(void);
 
 #endif  /* _IRON_GPG_H */

@@ -1,6 +1,8 @@
 /* $OpenBSD: sftp-client.c,v 1.124 2016/05/25 23:48:45 schwarze Exp $ */
 /*
  * Copyright (c) 2001-2004 Damien Miller <djm@openbsd.org>
+ * Copyright (c) 2016 IronCore Labs, Inc. <bob.wall@ironcorelabs.com>
+ * All rights reserved.
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -1155,20 +1157,6 @@ send_read_request(struct sftp_conn *conn, u_int id, u_int64_t offset,
 	sshbuf_free(msg);
 }
 
-#ifdef IRONCORE
-int
-get_user_confirmation(void)
-{
-	char line[30];
-	fgets(line, sizeof(line), stdin);
-	char yesno = line[strspn(line, " \t")];		//  Skips leading white space
-	while (line[strlen(line) - 1] != '\n') {
-		fgets(line, sizeof(line), stdin);
-	}
-	return (yesno == 'y' || yesno == 'Y');
-}
-#endif
-
 int
 do_download(struct sftp_conn *conn, const char *remote_path,
     const char *local_path, Attrib *a, int preserve_flag, int resume_flag,
@@ -1249,13 +1237,13 @@ do_download(struct sftp_conn *conn, const char *remote_path,
 		}
 		if (access(output_path, F_OK) == 0) {
 			printf("Output file \"%s\" already exists. Overwrite (y/n)? ", output_path);
-			if (!get_user_confirmation()) {
+			if (!iron_get_user_confirmation()) {
 				return(-1);
 			}
 		}
 		if (access(local_path, F_OK) == 0) {
 			printf("Download destination file \"%s\" already exists. Overwrite (y/n)? ", local_path);
-			if (!get_user_confirmation()) {
+			if (!iron_get_user_confirmation()) {
 				return(-1);
 			}
 		}
@@ -1711,7 +1699,7 @@ do_upload(struct sftp_conn *conn, const char *local_path,
 		c = do_stat(conn, remote_path, 1);
 		if (c != NULL) {
 			printf("Encrypted file \"%s\" exists on remote server. Overwrite (y/n)? ", remote_path);
-			if (!get_user_confirmation()) {
+			if (!iron_get_user_confirmation()) {
 				return(-1);
 			}
 		}

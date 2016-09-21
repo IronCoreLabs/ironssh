@@ -151,12 +151,6 @@ char *path_append(const char *, const char *);
 void add_home_dir_root(const char * path);
 
 int retrieve_user_pubkeys(struct sftp_conn * conn, const char * login);
-
-/*
- * Prompt user for a y/n response to a prompt. Read input line from stdin, return
- * true if it starts with y or Y (after skipping leading white space).
- */
-int get_user_confirmation(void);
 #endif
 
 #endif

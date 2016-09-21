@@ -30,6 +30,6 @@
 #ifndef _IRON_TRUSTDB_H
 #define _IRON_TRUSTDB_H
 
-extern int      write_gpg_trustdb_file(const unsigned char * key, size_t key_len, const char * uid);
+extern int      write_gpg_trustdb_file(const unsigned char * key_fp, const char * uid);
 
 #endif

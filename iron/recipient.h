@@ -37,15 +37,19 @@
 
 #define IRON_MAX_RECIPIENTS 11      //  Max # people with whom to share access to a file, including
                                     //  the person who generated the file.
-#define IRON_MAX_LOGIN_LEN  32
+#define IRON_MAX_LOGIN_LEN  33      //  Includes space for null terminator
 
-/*  Public keys (signing and encryption) and associated info for the specified login.  */
+/*  Public keys (signing and encryption) and associated info for the specified login.  The RSA key is
+ *  there to support files that were signed and uploaded using the first version of the program, which
+ *  still used the RSA key for signing instead of an Ed25519 key. */
 typedef struct gpg_public_key {
-    char       login[IRON_MAX_LOGIN_LEN + 1];
+    char       login[IRON_MAX_LOGIN_LEN];
+    u_char     sign_key[crypto_box_PUBLICKEYBYTES];
+    u_char     sign_fp[GPG_KEY_FP_LEN];
+    u_char     enc_key[crypto_box_PUBLICKEYBYTES];
+    u_char     enc_fp[GPG_KEY_FP_LEN];
     Key        rsa_key;
-    u_char     key[crypto_box_PUBLICKEYBYTES];
-    u_char     fp[GPG_KEY_FP_LEN];
-    u_char     signer_fp[GPG_KEY_FP_LEN];
+    u_char     rsa_fp[GPG_KEY_FP_LEN];
 } gpg_public_key;
 
 extern int                      iron_get_recipients(const gpg_public_key ** recip_list);

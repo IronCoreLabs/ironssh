@@ -50,6 +50,8 @@ extern int      iron_put_bignum(struct sshbuf * buf, const BIGNUM * bignum);
 
 extern void     iron_put_num_sexpr(struct sshbuf * buf, const u_char * bstr, int bstr_len);
 
+extern void     iron_put_x_coord_sexpr(struct sshbuf * buf, const u_char * x_coord, int len);
+
 extern void     iron_reverse_byte_array(const u_char * src, u_char * dst, unsigned int len);
 
 extern void     iron_reverse_byte_array_in_place(u_char * arr, unsigned int len);
@@ -60,7 +62,5 @@ extern void     iron_compute_sha1_hash_chars(const u_char * bstr, int bstr_len, 
 
 extern int      iron_hashcrypt(SHA_CTX * mdc_ctx, SHA256_CTX * sig_ctx, EVP_CIPHER_CTX * aes_ctx,
                                const u_char * input, int size, u_char * output);
-
-extern BIGNUM * iron_compute_rsa_signature(const u_char * digest, size_t digest_len, const Key * key);
 
 #endif
