@@ -1,7 +1,7 @@
 #  Placed in the Public Domain.
 
 if [ "x$IRON_SLOW_TESTS" != "x" ]; then
-	. ironsftp-slow.sh
+	. ${OBJ}/ironsftp-slow.sh
 else
-	. ironsftp-fast.sh
+	. ${OBJ}/ironsftp-fast.sh
 fi
