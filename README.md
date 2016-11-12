@@ -1,6 +1,6 @@
 ![][logo]
 
-# IronSSH - End-to-end secure file transfer
+# IronSFTP - End-to-end secure file transfer
 
 _An alternative to **sftp** and **scp** that keeps files encrypted after they're uploaded and allows sharing of files with cryptographic enforcement. See the [project homepage][homepage] for more details._
 
