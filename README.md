@@ -75,3 +75,6 @@ See the [project page installation section][homepageinstall] for supported opera
 [logo]: https://ironcorelabs.com/img/products/ironsftp.png
 [homepage]: https://ironcorelabs.com/products/ironsftp
 [homepageinstall]: https://ironcorelabs.com/products/ironsftp#installation
+
+Copyright (c)  2016-present  IronCore Labs, Inc.
+All rights reserved.
