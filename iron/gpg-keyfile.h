@@ -33,16 +33,17 @@
 #include "key.h"
 #include "iron/recipient.h"
 
-extern int      get_gpg_public_keys(const char * login, Key * rsa_key, u_char * rsa_fp, u_char * key,
-                                    size_t * key_len, u_char * fp);
+extern int      get_gpg_public_keys(const char * login, gpg_public_key * pub_keys);
 
 extern int      get_gpg_secret_encryption_key(const gpg_public_key * pub_keys, u_char * sec_key);
 
-extern int      get_gpg_secret_signing_key(Key * rsa_key);
+extern int      get_gpg_secret_signing_key(const gpg_public_key * pub_keys, u_char * sign_key);
+
+extern int      get_ssh_private_key(Key ** key);
+
+extern int      get_ssh_public_key(Key ** pub_key);
 
 extern int      iron_index_public_keys(gpg_public_key * keys);
-
-extern int      iron_retrieve_ssh_private_key(const char * prompt, Key ** key);
 
 extern char *   iron_get_user_by_key_id(const char * key_id);
 

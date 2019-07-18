@@ -98,26 +98,6 @@ test_tags()
     TEST_DONE();
 }
 
-/*  Retrieve next packet - read header, then read body specified by header length.  */
-static int
-get_gpg_packet(FILE * infile, gpg_packet * pkt)
-{
-    int retval = -1;
-
-    if (get_gpg_tag_and_size(infile, &pkt->tag, &pkt->len) == 0) {
-        if (pkt->len > 0) {
-            unsigned char * buf = malloc(pkt->len);
-            int num_read = fread(buf, sizeof(unsigned char), pkt->len, infile);
-            if (num_read == pkt->len) {
-                pkt->data = sshbuf_from(buf, pkt->len);
-                retval = 0;
-            }
-        }
-    }
-
-    return retval;
-}
-
 static void
 do_put_pkt(FILE * tstfile, tdata * test_item)
 {
@@ -132,14 +112,13 @@ do_put_pkt(FILE * tstfile, tdata * test_item)
 static void
 do_get_pkt(FILE * tstfile, tdata * test_item)
 {
-    gpg_packet pkt;
-    int retval = get_gpg_packet(tstfile, &pkt);
-    ASSERT_INT_EQ(retval, 0);
-    ASSERT_INT_EQ(pkt.tag, test_item->tag);
-    ASSERT_INT_EQ(pkt.len, test_item->size);
-    ASSERT_INT_EQ(pkt.len, test_item->size);
-    ASSERT_INT_EQ(memcmp(sshbuf_ptr(pkt.data), test_item->h, test_item->h_len), 0);
-    sshbuf_free(pkt.data);
+    gpg_packet * pkt = get_gpg_packet(tstfile);
+    ASSERT_PTR_NE(pkt, NULL);
+    ASSERT_INT_EQ(pkt->tag, test_item->tag);
+    ASSERT_INT_EQ(pkt->len, test_item->size);
+    ASSERT_INT_EQ(memcmp(sshbuf_ptr(pkt->data), test_item->h, test_item->h_len), 0);
+    sshbuf_free(pkt->data);
+    free(pkt);
 }
 
 void
@@ -187,24 +166,25 @@ test_packets(void)
 
 
     fclose(tstfile);
-    gpg_packet pkt;
     //  Need to start over with a new empty file because Linux doesn't return an error on fread() of a
     //  closed file. It happily makes up some random crap.
     char tfn[PATH_MAX];
     strcpy(tfn, "/tmp/ironcore_test_XXXX");
     int tfd = mkstemp(tfn);
     tstfile = fdopen(tfd, "r");
-    int retval = get_gpg_packet(tstfile, &pkt);
-    ASSERT_INT_EQ(retval, -1);
+    gpg_packet * pkt = get_gpg_packet(tstfile);
+    ASSERT_PTR_EQ(pkt, NULL);
     fclose(tstfile);
 
     //  Similar problem writing - can't try to write to an fclosed file. Open a file for read, then try
     //  to write to it.
+    pkt = malloc(sizeof(gpg_packet));
     tstfile = fopen(tfn, "r");
-    retval = put_gpg_packet(tstfile, &pkt);
+    int retval = put_gpg_packet(tstfile, pkt);
     ASSERT_INT_EQ(retval, -1);
     fclose(tstfile);
     unlink(tfn);
+    free(pkt);
 
     TEST_DONE();
 }

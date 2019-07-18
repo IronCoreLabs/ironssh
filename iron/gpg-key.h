@@ -59,36 +59,41 @@ extern void     compute_gpg_key_fingerprint(const gpg_packet * pubkey_pkt, u_cha
 extern int      encrypt_gpg_key_frame(const u_char * sym_key_frame, int frame_len, const gpg_public_key * key,
                                       u_char * enc_frame, u_char * ephem_pk);
 
-extern int      extract_gpg_rsa_seckey(const u_char * buf, int buf_len, Key * rsa_key);
-
 extern struct sshbuf * encrypt_gpg_sec_parms(const struct sshbuf * buf, const u_char * passphrase, u_char * salt,
                                              u_char * iv, size_t iv_len);
 
-extern int      extract_gpg_rsa_pubkey(const struct sshbuf * buf, Key * rsa_key);
+extern int      extract_gpg_curve25519_pubkey(const struct sshbuf * buf, u_char * key);
 
-extern int      extract_gpg_curve25519_seckey(const u_char * buf, int buf_len, const Key * ssh_key, u_char * d);
+extern int      extract_gpg_ed25519_pubkey(const struct sshbuf * buf, u_char * key);
+
+extern int      extract_gpg_curve25519_seckey(const u_char * buf, int buf_len, u_char * sec_key);
+
+extern int      extract_gpg_ed25519_seckey(const u_char * buf, int buf_len, const u_char * pub_key, u_char * sec_key);
 
 extern int      extract_gpg_ephemeral_key(const u_char * msg, const u_char ** ephem_pk);
 
 extern int      extract_gpg_sym_key(const u_char * msg, const gpg_public_key * pub_keys, const u_char * ephemeral_pk,
                                     u_char * sym_key);
 
-extern void     generate_gpg_curve25519_keygrip(const u_char * q, int q_len, u_char * grip);
+extern void     generate_gpg_ed25519_keygrip(const u_char * pub_key, u_char * grip);
 
-extern void     generate_gpg_curve25519_pubkey_parms(const u_char * pub_key, int pk_len, struct sshbuf * buf);
+extern void     generate_gpg_curve25519_keygrip(const u_char * pub_key, u_char * grip);
 
-extern struct sshbuf * generate_gpg_curve25519_seckey(const u_char * q, int q_len, const u_char * d, int d_len,
+extern void     generate_gpg_ed25519_pubkey_parms(const u_char * pub_key, struct sshbuf * buf);
+
+extern void     generate_gpg_curve25519_pubkey_parms(const u_char * pub_key, struct sshbuf * buf);
+
+extern struct sshbuf * generate_gpg_curve25519_seckey(const u_char * pub_key, const u_char * sec_key,
                                                       const u_char * passphrase);
 
-extern int      generate_gpg_passphrase_from_rsa(const Key * rsa_key, char * passphrase);
+extern struct sshbuf * generate_gpg_ed25519_seckey(const u_char * pub_key, const u_char * sec_key,
+                                                   const u_char * passphrase);
 
-extern void     generate_gpg_rsa_keygrip(const Key * rsa_key, u_char * grip);
-
-extern struct sshbuf * generate_gpg_rsa_seckey(const Key * ssh_key, const u_char * passphrase);
+extern int      generate_gpg_passphrase(char * passphrase);
 
 extern int      generate_gpg_sym_key_frame(u_char * sym_key_frame);
 
-extern int      get_gpg_curve25519_key_offset(void);
+extern int      gpg_packet_is_ed25519_key(const u_char * buf, int buf_len);
 
 extern int      gpg_packet_is_curve25519_key(const u_char * buf, int buf_len);
 

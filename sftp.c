@@ -1,6 +1,8 @@
 /* $OpenBSD: sftp.c,v 1.175 2016/07/22 03:47:36 djm Exp $ */
 /*
  * Copyright (c) 2001-2004 Damien Miller <djm@openbsd.org>
+ * Copyright (c) 2016 IronCore Labs, Inc. <bob.wall@ironcorelabs.com>
+ * All rights reserved.
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -2446,6 +2448,7 @@ main(int argc, char **argv)
 	long long limit_kbps = 0;
 #ifdef IRONCORE
     char *test_dir = NULL;
+    char *identity_file = NULL;
 #endif
 
 	ssh_malloc_init();	/* must be called before any mallocs */
@@ -2485,6 +2488,9 @@ main(int argc, char **argv)
 		case 'o':
 			addargs(&args, "-%c", ch);
 			addargs(&args, "%s", optarg);
+#ifdef IRONCORE
+            if (ch == 'i') identity_file = strdup(optarg);
+#endif
 			break;
 		case 'q':
 			ll = SYSLOG_LEVEL_ERROR;
@@ -2676,13 +2682,13 @@ main(int argc, char **argv)
 				  "the IronCore keys on a different machine.\n"
 				  "Do you want to generate new keys on this machine?",
 				  IRON_PUBKEY_FNAME);
-			if (!get_user_confirmation()) {
+			if (!iron_get_user_confirmation()) {
 				fatal("Copy your keys to the local machine then rerun %s.", argv[0]);
 			}
 		}
 
 		//  The .pubkey file wasn't on the server, or the user wants to generate local keys anyway.
-		if (iron_generate_keys() < 0) fatal("Unable to start.");
+		if (iron_generate_keys(identity_file) < 0) fatal("Unable to start.");
 	} else {
 		strlcat(remote_pubkey, IRON_PUBKEY_FNAME, sizeof(remote_pubkey));
 	}

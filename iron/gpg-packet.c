@@ -410,26 +410,23 @@ generate_gpg_tag_and_size(gpg_tag tag, ssize_t size, u_char * buf)
 }
 
 /**
- *  Generate GPG public key packet.
+ *  Generate GPG Public Key Packet for ed25519 key
  *
- *  Given an SSH key, create a GPG Public Key packet with the data from the SSH Key.
+ *  Format a GPG public key packet containing an ed25519 public key.
  *
- *  ** Currently only handles RSA keys.
- *
- *  @param ssh_key SSH RSA key
- *  @param pkt Place to write packet. Caller should sshbuf_free pkt->data
+ *  @param pub_key Byte array containing ed25519 public key
+ *  @param pkt Place to put generated packet. Caller should sshbuf_free pkt->data
  */
 void
-generate_gpg_public_key_packet(const Key * ssh_key, gpg_packet * pkt)
+generate_gpg_ed25519_pubkey_packet(const u_char * pub_key, gpg_packet * pkt)
 {
     pkt->tag = GPG_TAG_PUBLIC_KEY;
     pkt->data = sshbuf_new();
 
     sshbuf_put_u8(pkt->data, GPG_KEY_VERSION);
     sshbuf_put_u32(pkt->data, iron_gpg_now());
-    sshbuf_put_u8(pkt->data, GPG_PKALGO_RSA_ES);
-    iron_put_bignum(pkt->data, ssh_key->rsa->n);
-    iron_put_bignum(pkt->data, ssh_key->rsa->e);
+    sshbuf_put_u8(pkt->data, GPG_PKALGO_EDDSA);
+    generate_gpg_ed25519_pubkey_parms(pub_key, pkt->data);
     pkt->len = sshbuf_len(pkt->data);
 }
 
@@ -443,7 +440,7 @@ generate_gpg_public_key_packet(const Key * ssh_key, gpg_packet * pkt)
  *  @param pkt Place to put generated packet. Caller should sshbuf_free pkt->data
  */
 void
-generate_gpg_curve25519_subkey_packet(const u_char * pub_key, size_t pk_len, gpg_packet * pkt)
+generate_gpg_curve25519_subkey_packet(const u_char * pub_key, gpg_packet * pkt)
 {
     pkt->tag = GPG_TAG_PUBLIC_SUBKEY;
     pkt->data = sshbuf_new();
@@ -451,7 +448,7 @@ generate_gpg_curve25519_subkey_packet(const u_char * pub_key, size_t pk_len, gpg
     sshbuf_put_u8(pkt->data, GPG_KEY_VERSION);
     sshbuf_put_u32(pkt->data, iron_gpg_now());
     sshbuf_put_u8(pkt->data, GPG_PKALGO_ECDH);      //  Curve25519 is an instance of ECDH
-    generate_gpg_curve25519_pubkey_parms(pub_key, pk_len, pkt->data);
+    generate_gpg_curve25519_pubkey_parms(pub_key, pkt->data);
     pkt->len = sshbuf_len(pkt->data);
 }
 
@@ -481,7 +478,7 @@ populate_signature_header(struct sshbuf * body, int sig_class, gpg_tag pubkey_ta
 {
     sshbuf_put_u8(body, GPG_SIG_VERSION);
     sshbuf_put_u8(body, sig_class);
-    sshbuf_put_u8(body, GPG_PKALGO_RSA_ES);
+    sshbuf_put_u8(body, GPG_PKALGO_EDDSA);
     sshbuf_put_u8(body, GPG_HASHALGO_SHA256);
     sshbuf_put_u16(body, 24);       //  Length of hashed subpackets
     sshbuf_put_u8(body, 5);         //  Length of signature creation time subpacket
@@ -590,7 +587,7 @@ compute_signature_hash(const gpg_packet * pubkey_pkt, const gpg_packet * uid_pkt
  */
 void
 generate_gpg_pk_uid_signature_packet(const gpg_packet * pubkey_pkt, const gpg_packet * uid_pkt,
-                                     const Key * key, int sig_class, const u_char * key_id,
+                                     const u_char * sec_sign_key, int sig_class, const u_char * key_id,
                                      gpg_packet * pkt)
 {
     pkt->tag = GPG_TAG_SIGNATURE;
@@ -601,23 +598,24 @@ generate_gpg_pk_uid_signature_packet(const gpg_packet * pubkey_pkt, const gpg_pa
     u_char hash[SHA256_DIGEST_LENGTH];
     compute_signature_hash(pubkey_pkt, uid_pkt, pkt, hash);
 
-    /* Add the unhashed subpackets to the signature packet now. Currently, just the issuer subpacket. */
+    //  Add the unhashed subpackets to the signature packet now. Currently, just the issuer subpacket.
     sshbuf_put_u16(pkt->data, GPG_KEY_ID_LEN + 2);  //  Length of unhashed subpackets
     sshbuf_put_u8(pkt->data, GPG_KEY_ID_LEN + 1);   //  Length of issuer subpacket
     sshbuf_put_u8(pkt->data, GPG_SIG_SUBPKT_ISSUER);
     sshbuf_put(pkt->data, key_id, GPG_KEY_ID_LEN);
 
-    /* Tack on the first two bytes of the hash value, for error detection. */
+    //  Tack on the first two bytes of the hash value, for error detection.
     sshbuf_put_u8(pkt->data, hash[0]);
     sshbuf_put_u8(pkt->data, hash[1]);
 
-    /* Now compute the RSA signature of the hash - m^d mod n, where m is the message (the hash), d is the
-     * private key, and n is the modulus. This MPI goes into the signature packet (with the normal two-octet
-     * length prefix).
-     */
-    BIGNUM * sig = iron_compute_rsa_signature(hash, SHA256_DIGEST_LENGTH, key);
-    iron_put_bignum(pkt->data, sig);
-    BN_clear_free(sig);
+    //  Now compute the ed25519 signature of the hash. The signature is actually two pieces, r and s (each is half
+    //  of the computed value). Write each MPI into the signature packet (with the normal two-octet length prefix).
+    u_char sig[crypto_sign_BYTES];
+    crypto_sign_detached(sig, NULL, hash, SHA256_DIGEST_LENGTH, sec_sign_key);
+    sshbuf_put_u16(pkt->data, crypto_sign_PUBLICKEYBYTES * 8);
+    sshbuf_put(pkt->data, sig, crypto_sign_PUBLICKEYBYTES);
+    sshbuf_put_u16(pkt->data, crypto_sign_PUBLICKEYBYTES * 8);
+    sshbuf_put(pkt->data, sig + crypto_sign_PUBLICKEYBYTES, crypto_sign_PUBLICKEYBYTES);
     pkt->len = sshbuf_len(pkt->data);
 }
 
@@ -668,7 +666,7 @@ generate_gpg_pkesk_packet(const gpg_public_key * key, u_char * sym_key_frame, in
     pkt->data = sshbuf_new();
 
     sshbuf_put_u8(pkt->data, GPG_PKESK_VERSION);
-    sshbuf_put(pkt->data, key->fp + (GPG_KEY_FP_LEN - GPG_KEY_ID_LEN), GPG_KEY_ID_LEN);
+    sshbuf_put(pkt->data, GPG_KEY_ID_FROM_FP(key->enc_fp), GPG_KEY_ID_LEN);
     sshbuf_put_u8(pkt->data, GPG_PKALGO_ECDH);      //  Algorithm used to encrypt symmetric key
 
     //  We are going to encrypt the sym. key frame using AES128-WRAP. This requires that the frame be a multiple
@@ -799,32 +797,50 @@ write_gpg_mdc_packet(FILE * outfile, SHA_CTX * sha_ctx, EVP_CIPHER_CTX * aes_ctx
 //  GPG packet retrieval funcs
 //================================================================================
 
-
 /**
- *  Read public key packet from file.
+ *  Read GPG packet from file.
  *
  *  @param infile File from which to read
- *  @return gpg_packet containing packet, or NULL if error. Caller should sshbuf_free pkt->data, free pkt
+ *  @return gpg_packet containing packet data, or NULL if error. Caller should sshbuf_free pkt->data, free pkt
  */
 gpg_packet *
-get_gpg_pub_key_packet(FILE * infile)
+get_gpg_packet(FILE * infile)
 {
     gpg_tag tag = GPG_TAG_DO_NOT_USE;
     size_t len;
 
     gpg_packet * pkt = NULL;
-    get_gpg_tag_and_size(infile, &tag, &len);
-    if (tag == GPG_TAG_PUBLIC_KEY) {
-        u_char * key = malloc(len);
-        if (fread(key, 1, len, infile) == (size_t) len) {
+    if (get_gpg_tag_and_size(infile, &tag, &len) == 0) {
+        u_char * data = malloc(len);
+        if (fread(data, 1, len, infile) == (size_t) len) {
             pkt = malloc(sizeof(gpg_packet));
             pkt->tag = tag;
             pkt->len = len;
-            pkt->data = sshbuf_from(key, len);
+            pkt->data = sshbuf_from(data, len);
         } else {
-            error("Unable to read full public key packet from file.");
-            free(key);
+            error("Unable to read full GPG packet from file.");
+            free(data);
         }
+    }
+
+    return pkt;
+}
+
+
+/**
+ *  Read public key packet from file.
+ *
+ *  @param infile File from which to read
+ *  @return gpg_packet containing public key data, or NULL if error. Caller should sshbuf_free pkt->data, free pkt
+ */
+gpg_packet *
+get_gpg_pub_key_packet(FILE * infile)
+{
+    gpg_packet * pkt = get_gpg_packet(infile);
+    if (pkt != NULL && pkt->tag != GPG_TAG_PUBLIC_KEY) {
+        sshbuf_free(pkt->data);
+        free(pkt);
+        pkt = NULL;
     }
 
     return pkt;
@@ -837,7 +853,7 @@ get_gpg_pub_key_packet(FILE * infile)
  *  @return gpg_packet containing packet, or NULL if error. Caller should sshbuf_free pkt->data, free pkt
  */
 gpg_packet *
-get_gpg_curve25519_key_packet(FILE * infile)
+get_gpg_curve25519_subkey_packet(FILE * infile)
 {
     gpg_tag tag = GPG_TAG_DO_NOT_USE;
     size_t len;
@@ -865,7 +881,7 @@ get_gpg_curve25519_key_packet(FILE * infile)
         if (!gpg_packet_is_curve25519_key(subkey, len)) {
             //  Nope - different subkey. Throw the packet away and try again.
             free(subkey);
-            pkt = get_gpg_curve25519_key_packet(infile);
+            pkt = get_gpg_curve25519_subkey_packet(infile);
         } else {
             pkt = malloc(sizeof(gpg_packet));
             pkt->tag = tag;
@@ -882,7 +898,8 @@ get_gpg_curve25519_key_packet(FILE * infile)
  *
  *  Read the start of the input file, which should be a sequence of Public Key Encrypted Symmetric Key packets.
  *  Look for the one that matches the provided key ID. If found, recover the PKESK packet. Continue reading
- *  until all PKESK packets are read from the file.
+ *  until all PKESK packets are read from the file. In the process, output a list of the users with whom the
+ *  file was shared, and a count of the users where we can't determine the user name.
  *
  *  @param infile File from which to read packet
  *  @param key_id ID of user's public key
@@ -907,7 +924,7 @@ get_gpg_pkesk_packet(FILE * infile, const char * key_id, u_char * pkt, gpg_tag *
 
     int known_user_ct = 0;
     int unknown_user_ct = 0;
-    char known_users[(IRON_MAX_RECIPIENTS - 1) * (IRON_MAX_LOGIN_LEN + 2) + 1];
+    char known_users[IRON_MAX_RECIPIENTS * (IRON_MAX_LOGIN_LEN + 1) + 1];
     known_users[0] = '\0';
 
     while (tag == GPG_TAG_PKESK && !feof(infile)) {
@@ -942,7 +959,7 @@ get_gpg_pkesk_packet(FILE * infile, const char * key_id, u_char * pkt, gpg_tag *
                 if (known_user_ct > 0) {
                     strcat(known_users, ", ");
                 }
-                strlcat(known_users, login, IRON_MAX_LOGIN_LEN + 1);
+                strlcat(known_users, login, sizeof(known_users));
                 known_user_ct++;
             } else {
                 unknown_user_ct++;
@@ -1031,18 +1048,17 @@ generate_gpg_one_pass_signature_packet(const u_char * key_id, gpg_packet * ops_p
  *  Fills out the packet up to the first two bytes of the hash and the actual signature - those will be
  *  populated later.
  *
- *  @param rsa_key So we can compute how big the actual signature will be.
- *  @param key_id Of the signing key
+ *  @param pub_keys For the signing key fingerprint
  *  @param sig_pkt place to put the signature packet
  */
 void
-generate_gpg_data_signature_packet(const Key * rsa_key, const u_char * key_id, gpg_packet * sig_pkt)
+generate_gpg_data_signature_packet(const gpg_public_key * pub_keys, gpg_packet * sig_pkt)
 {
     sig_pkt->tag = GPG_TAG_SIGNATURE;
     sig_pkt->data = sshbuf_new();
     sshbuf_put_u8(sig_pkt->data, GPG_SIG_VERSION);
     sshbuf_put_u8(sig_pkt->data, GPG_SIGCLASS_BINARY_DOC);
-    sshbuf_put_u8(sig_pkt->data, GPG_PKALGO_RSA_ES);
+    sshbuf_put_u8(sig_pkt->data, GPG_PKALGO_EDDSA);
     sshbuf_put_u8(sig_pkt->data, GPG_HASHALGO_SHA256);
     sshbuf_put_u16(sig_pkt->data, 6);               //  Length of hashed subpackets
     sshbuf_put_u8(sig_pkt->data, 5);                //  Length of signature creation time subpacket
@@ -1051,14 +1067,12 @@ generate_gpg_data_signature_packet(const Key * rsa_key, const u_char * key_id, g
     sshbuf_put_u16(sig_pkt->data, GPG_KEY_ID_LEN + 2);  //  Length of unhashed subpackets
     sshbuf_put_u8(sig_pkt->data, GPG_KEY_ID_LEN + 1);   //  Length of issuer subpacket
     sshbuf_put_u8(sig_pkt->data, GPG_SIG_SUBPKT_ISSUER);
-    sshbuf_put(sig_pkt->data, key_id, GPG_KEY_ID_LEN);
+    sshbuf_put(sig_pkt->data, GPG_KEY_ID_FROM_FP(pub_keys->sign_fp), GPG_KEY_ID_LEN);
 
     //  This is all we can fill in for now. The rest of the packet will be two bytes that are the first
-    //  two bytes of the hash that is being signed, then the signature. The signature length is the same
-    //  as the RSA key length. We will set the length to include that data now, but we will populate it
-    //  later.
-    size_t rsa_len = RSA_size(rsa_key->rsa);
-    sig_pkt->len = sshbuf_len(sig_pkt->data) + 2 /* hash bytes */ + 2 /* MPI length */ + rsa_len;
+    //  two bytes of the hash that is being signed, then the signature. The signature length is crypto_sign_BYTES.
+    //  We will set the length to include that data now, but we will populate it later.
+    sig_pkt->len = sshbuf_len(sig_pkt->data) + 2 /* hash bytes */ + 4 /* 2 MPI lengths */ + crypto_sign_BYTES;
 }
 
 /**
@@ -1068,11 +1082,11 @@ generate_gpg_data_signature_packet(const Key * rsa_key, const u_char * key_id, g
  *  into the signature packet that was started by generate_gpg_data_signature_packet.
  *
  *  @param sig_ctx Running hash that will be signed to generate signature
- *  @param rsa_key RSA signing key (will be populated with secret params if it isn't already)
+ *  @param pub_keys User's public keys (use the public signing key to get the secret signing key)
  *  @param sig_pkt Signature packet with everything populated except the signature (including the length)
  */
 int
-finalize_gpg_data_signature_packet(SHA256_CTX * sig_ctx, Key * rsa_key, gpg_packet * sig_pkt)
+finalize_gpg_data_signature_packet(SHA256_CTX * sig_ctx, const gpg_public_key * pub_keys, gpg_packet * sig_pkt)
 {
     int retval = -1;
 
@@ -1094,11 +1108,16 @@ finalize_gpg_data_signature_packet(SHA256_CTX * sig_ctx, Key * rsa_key, gpg_pack
     sshbuf_put_u8(sig_pkt->data, sig_hash[0]);
     sshbuf_put_u8(sig_pkt->data, sig_hash[1]);
 
-    if (get_gpg_secret_signing_key(rsa_key) == 0) {
-        BIGNUM * sig = iron_compute_rsa_signature(sig_hash, SHA256_DIGEST_LENGTH, rsa_key);
-        iron_put_bignum(sig_pkt->data, sig);
+    u_char sec_sign_key[crypto_sign_SECRETKEYBYTES];
+    if (get_gpg_secret_signing_key(pub_keys, sec_sign_key) == sizeof(sec_sign_key)) {
+        u_char sig[crypto_sign_BYTES];
+        crypto_sign_detached(sig, NULL, sig_hash, SHA256_DIGEST_LENGTH, sec_sign_key);
+        sshbuf_put_u16(sig_pkt->data, crypto_sign_PUBLICKEYBYTES * 8);
+        sshbuf_put(sig_pkt->data, sig, crypto_sign_PUBLICKEYBYTES);
+        sshbuf_put_u16(sig_pkt->data, crypto_sign_PUBLICKEYBYTES * 8);
+        sshbuf_put(sig_pkt->data, sig + crypto_sign_PUBLICKEYBYTES, crypto_sign_PUBLICKEYBYTES);
         retval = 0;
-
+#if 0
         //  There is a chance that the signature ended up being shorter than the expected length - when it
         //  is converted to a bignum, leading zero bits are dropped, so if there are 8 or more leading zeroes,
         //  we will come up short. Just fill out the remainder of the packet with zero bytes so it is the
@@ -1111,6 +1130,7 @@ finalize_gpg_data_signature_packet(SHA256_CTX * sig_ctx, Key * rsa_key, gpg_pack
             error("Did not generate complete contents of data signature packet."); 
         }
         BN_clear_free(sig);
+#endif
     }
 
     return retval;
@@ -1120,17 +1140,17 @@ finalize_gpg_data_signature_packet(SHA256_CTX * sig_ctx, Key * rsa_key, gpg_pack
  *  Extract data signature packet from buffer, verify.
  *
  *  Ensure that the signature packet is as expected, and if so, try to validate the signature. If we can't
- *  find the public RSA signing key, output a warning. If we can, validate that the computed signature
- *  matches the one in the signature packet. If not, return an error.
+ *  find the public signing key, output a warning. If we can, validate that the computed signature matches
+ *  the one in the signature packet. If not, return an error.
  *
  *  @param dec_buf array of bytes holding decrypted data
  *  @param buf_len num bytes in dec_buf
  *  @param sig_ctx SHA256 hash that has been computed over the file data
- *  @param rsa_key_id key ID from OPS packet
+ *  @param sign_key_id key ID from OPS packet
  *  @return 0 if signature validates successfully, negative number if errors
  */
 int
-process_data_signature_packet(const u_char * dec_buf, int buf_len, SHA256_CTX * sig_ctx, const u_char * rsa_key_id)
+process_data_signature_packet(const u_char * dec_buf, int buf_len, SHA256_CTX * sig_ctx, const u_char * sign_key_id)
 {
     gpg_tag tag;
     size_t len;
@@ -1141,7 +1161,9 @@ process_data_signature_packet(const u_char * dec_buf, int buf_len, SHA256_CTX * 
     const u_char * dptr = dec_buf + sig_hdr_len;
     if (*(dptr++) != GPG_SIG_VERSION) return -3;
     if (*(dptr++) != GPG_SIGCLASS_BINARY_DOC) return -4;
-    if (*(dptr++) != GPG_PKALGO_RSA_ES) return -5;
+
+    gpg_pk_algo pkalgo = (gpg_pk_algo) *(dptr++);
+    if (pkalgo != GPG_PKALGO_RSA_ES && pkalgo != GPG_PKALGO_EDDSA) return -5;
     if (*(dptr++) != GPG_HASHALGO_SHA256) return -6;
     int hashed_len = (*dptr << 8) + *(dptr + 1);
     dptr += 2;
@@ -1168,10 +1190,10 @@ process_data_signature_packet(const u_char * dec_buf, int buf_len, SHA256_CTX * 
     memcpy(key_id, dptr, GPG_KEY_ID_LEN);
     dptr += GPG_KEY_ID_LEN;
 
-    if (memcmp(rsa_key_id, key_id, GPG_KEY_ID_LEN) != 0) return -11;
+    if (memcmp(sign_key_id, key_id, GPG_KEY_ID_LEN) != 0) return -11;
 
-    //  Now we are to the actual signature. Attempt to find the public RSA signing key corresponding to
-    //  the key ID from the OPS/Signature packets, sign the hash, and compare to the signature in the packet.
+    //  Now we are to the actual signature. Attempt to find the public signing key corresponding to the key
+    //  ID from the OPS/Signature packets, sign the hash, and compare to the signature in the packet.
     char hex_id[2 * GPG_KEY_ID_LEN + 1];
     iron_hex2str(key_id, GPG_KEY_ID_LEN, hex_id);
 
@@ -1179,11 +1201,15 @@ process_data_signature_packet(const u_char * dec_buf, int buf_len, SHA256_CTX * 
     if (*dptr != hash[0] || *(dptr + 1) != hash[1]) return -12;
     dptr += 2;
 
+    int retval = len + sig_hdr_len;
+
     const gpg_public_key * signer_keys = iron_get_recipient_keys_by_key_id(key_id);
     if (signer_keys == NULL) {
         signer_keys = iron_get_user_keys_by_key_id(key_id);
     }
     if (signer_keys != NULL) {
+        //  An Ed25519 signature is actually split into two pieces in the packet - need to reassemble them.
+        //
         //  When we wrote the signature packet, if by some chance the signature had eight or more leading
         //  zero bits, those got truncated when the signature was converted to a BIGNUM. Needed to do that
         //  to keep GPG happy. However, if we try to verify that signature, OpenSSL fails immediate. So we
@@ -1192,26 +1218,44 @@ process_data_signature_packet(const u_char * dec_buf, int buf_len, SHA256_CTX * 
         dptr += 2;
         sig_len = (sig_len + 7) / 8;            //  Convert to bytes
 
-        int exp_size = RSA_size(signer_keys->rsa_key.rsa);
+        int exp_size;
+        if (pkalgo == GPG_PKALGO_EDDSA) exp_size = (int) crypto_sign_PUBLICKEYBYTES;
+        else if (pkalgo == GPG_PKALGO_RSA_ES) exp_size = RSA_size(signer_keys->rsa_key.rsa);
+        else {
+            error("Message was signed using an unrecognized public key algorithm - cannot verify signature.");
+            return -13;
+        }
         int short_ct = exp_size - sig_len;
         u_char tmp_sig[GPG_MAX_KEY_SIZE];
-        if (short_ct != 0) {
-            bzero(tmp_sig, short_ct);
-            memcpy(tmp_sig + short_ct, dptr, sig_len);
-            dptr = tmp_sig;
-        }
+        bzero(tmp_sig, short_ct);
+        memcpy(tmp_sig + short_ct, dptr, sig_len);
+        dptr += sig_len;
 
-        if (RSA_verify(NID_sha256, hash, SHA256_DIGEST_LENGTH, dptr, exp_size, signer_keys->rsa_key.rsa) != 1) {
-            error("ERROR: message was signed by user %s, key ID %s,\n       but signature is not correct.",
-                  signer_keys->login, hex_id);
-            return -13;
-        } else {
-            logit("Message was signed by user %s, key ID %s.", signer_keys->login, hex_id);
+        if (pkalgo == GPG_PKALGO_EDDSA) {
+            sig_len = (*dptr << 8) + *(dptr + 1);   //  Size in bits
+            dptr += 2;
+            sig_len = (sig_len + 7) / 8;            //  Convert to bytes
+            memcpy(tmp_sig + crypto_sign_PUBLICKEYBYTES, dptr, sig_len);
+
+            if (crypto_sign_verify_detached(tmp_sig, hash, SHA256_DIGEST_LENGTH, signer_keys->sign_key) != 0) {
+                error("ERROR: message was signed by user %s, key ID %s,\n       but signature is not correct.",
+                      signer_keys->login, hex_id);
+                retval = -14;
+            }
+        } else /* Must be RSA */ {
+            if (RSA_verify(NID_sha256, hash, SHA256_DIGEST_LENGTH, tmp_sig, exp_size,
+                           signer_keys->rsa_key.rsa) != 1) {
+                error("ERROR: message was signed by user %s, key ID %s,\n       but signature is not correct.",
+                      signer_keys->login, hex_id);
+                retval = -15;
+            }
         }
+        
+        if (retval > 0) logit("Message was signed by user %s, key ID %s.", signer_keys->login, hex_id);
     } else {
         logit("WARNING: unable to identify owner of key ID %s - unable to verify signature.", hex_id);
     }
 
-    return len + sig_hdr_len;
+    return retval;
 }
 

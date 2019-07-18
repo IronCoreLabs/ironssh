@@ -78,7 +78,7 @@ main(int argc, char **argv)
 
     int keys_available = iron_check_keys();
     if (keys_available < 0 ||
-            (keys_available == 0 && iron_generate_keys() < 0)) {
+            (keys_available == 0 && iron_generate_keys(NULL) < 0)) {
         fprintf(stderr, "Unable to find or create the necessary keys for current user's login\n\n");
         return -3;
     }

@@ -48,6 +48,7 @@
 #include "sshbuf.h"
 #include "ssherr.h"
 #include "uuencode.h"
+#include "xmalloc.h"
 
 #include "sodium.h"
 
@@ -65,15 +66,14 @@
 #define S2K_ITER_BYTE_COUNT     20971520    //  # of bytes to produce by iterating S2K hash
 #define S2K_ITER_ENCODED        228         //  Encoding of byte count in RVC 2440 / 4880 format
 
-#define PRE_ENC_PPHRASE_BYTES   33      //  Number of bytes of RSA signature to use as passphrase (pre-base64 encoding)
-#define PPHRASE_LEN             4 * ((PRE_ENC_PPHRASE_BYTES + 2) / 3) + 1       //  +1 for null terminator
-
-#define GPG_PUB_PARM_PREFIX     "(5:curve10:Curve25519)(5:flags9:djb-tweak)(1:q"
+#define GPG_CV_PUB_PARM_PREFIX  "(5:curve10:Curve25519)(5:flags9:djb-tweak)(1:q"
+#define GPG_ED_PUB_PARM_PREFIX  "(5:curve7:Ed25519)(5:flags5:eddsa)(1:q"
 #define GPG_SEC_PARM_PREFIX     "(9:protected25:openpgp-s2k3-sha1-aes-cbc((4:sha18:"
 
 #define PROTECTED_AT_LEN        36      //  # chars in (12:protected-at15:<date>) string (w/ null terminator)
 
 /*  Curve 25519 parameters P, A, B, N, G_X, G_Y, H)
+       y^2 = x^3 + 48662 x^2 + x
     P   = "0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFED",     prime
     A   = "0x01DB41",                                                               A coefficient of curve
     B   = "0x01",                                                                   B coefficient of curve
@@ -119,13 +119,13 @@ static const char curve25519_kek_parm[] = {
     0x03, 0x01, 0x08, 0x07
 };
 
-struct curve25519_param_entry {
+typedef struct curve_param_entry {
     char param_name;
     u_char * value;
     int len;
-};
+} curve_param_entry;
 
-struct curve25519_param_entry curve25519_param[] = {
+curve_param_entry curve25519_param[] = {
     { 'p', curve25519_p, sizeof(curve25519_p) },
     { 'a', curve25519_a, sizeof(curve25519_a) },
     { 'b', curve25519_b, sizeof(curve25519_b) },
@@ -133,6 +133,98 @@ struct curve25519_param_entry curve25519_param[] = {
     { 'n', curve25519_n, sizeof(curve25519_n) }
 };
 
+
+/*  Ed25519 parameters P, A, B, N, G_X, G_Y, H)
+       -x^2 + y^2 = 1 + dx^2y^2
+    P   = "0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFED",     prime
+    A   = "-0x01",                                                                  A coefficient of curve
+    B   = "-0x2DFC9311D490018C7338BF8688861767FF8FF5B2BEBE27548A14B235ECA6874A",    B coefficient of curve
+    N   = "0x1000000000000000000000000000000014DEF9DEA2F79CD65812631A5CF5D3ED",     order of base point
+    G_X = "0x216936D3CD6E53FEC0A4E231FDD6DC5C692CC7609525A7B2C9562D608F25D51A",     base point X
+    G_Y = "0x6666666666666666666666666666666666666666666666666666666666666658",     base point Y
+    H   = "0x08"                                                                    cofactor
+*/
+
+static u_char ed25519_a[] = {
+    0x01
+};
+static u_char ed25519_b[] = {
+    0x2d, 0xfc, 0x93, 0x11, 0xd4, 0x90, 0x01, 0x8c, 0x73, 0x38, 0xbf, 0x86, 0x88, 0x86, 0x17, 0x67,
+    0xff, 0x8f, 0xf5, 0xb2, 0xbe, 0xbe, 0x27, 0x54, 0x8a, 0x14, 0xb2, 0x35, 0xec, 0xa6, 0x87, 0x4a
+};
+static u_char ed25519_g[] = {
+    0x04,
+    0x21, 0x69, 0x36, 0xd3, 0xcd, 0x6e, 0x53, 0xfe, 0xc0, 0xa4, 0xe2, 0x31, 0xfd, 0xd6, 0xdc, 0x5c,
+    0x69, 0x2c, 0xc7, 0x60, 0x95, 0x25, 0xa7, 0xb2, 0xc9, 0x56, 0x2d, 0x60, 0x8f, 0x25, 0xd5, 0x1a,
+    0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66,
+    0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x58
+};
+
+/*  The OID for Ed25519 in OpenPGP format. This represents the text OID 1.3.6.1.4.1.11591.15.1  */
+static const char ed25519_oid[] = {
+    0x09, 0x2b, 0x06, 0x01, 0x04, 0x01, 0xda, 0x47, 0x0f, 0x01
+};
+
+curve_param_entry ed25519_param[] = {
+    { 'p', curve25519_p, sizeof(curve25519_p) },
+    { 'a', ed25519_a,    sizeof(ed25519_a) },
+    { 'b', ed25519_b,    sizeof(ed25519_b) },
+    { 'g', ed25519_g,    sizeof(ed25519_g) },
+    { 'n', curve25519_n, sizeof(curve25519_n) }
+};
+
+#define GPG_KEY_PKT_PKALGO_OFFSET    5     //  # bytes at start of key/subkey packet body before algo type
+
+//  Version, 4-byte timestamp, algo, 10-byte OID, 2-byte MPI length, 32-byte MPI
+#define GPG_ED25519_PUBKEY_PKT_LEN   (8 + sizeof(ed25519_oid) + crypto_sign_PUBLICKEYBYTES)
+
+//  Version, 4-byte timestamp, algo, 11-byte OID, 2-byte MPI length, 32-byte MPI
+#define GPG_CV25519_PUBKEY_PKT_LEN   (8 + sizeof(curve25519_oid) + crypto_box_PUBLICKEYBYTES)
+
+
+/**
+ *  Write byte array containing Elliptic Curve point's X coordinate to buffer as S-expression
+ *
+ *  Format an array of bytes as a GPG S-expression (length in bytes, as an ASCII string, followed by ':',
+ *  then the byte array). But add a '@' character (0x40) before the value to indicate that it is only the
+ *  X coordinate, not a complete (X, Y) point.
+ *
+ *  @param buf Place to write S-expression
+ *  @param x_coord X coordinate to write
+ *  @param len Num bytes in x_coord
+ */
+static void
+put_x_coord_sexpr(struct sshbuf * buf, const u_char * x_coord, int len)
+{
+    char tmp[16];
+    sprintf(tmp, "%d:", len + 1);      //  For the extra '@'
+    sshbuf_put(buf, tmp, strlen(tmp));
+    sshbuf_put_u8(buf, GPG_ECC_PUBKEY_PREFIX);
+    sshbuf_put(buf, x_coord, len);
+}
+
+/**
+ *  Check whether the body of a packet is an ed25519 key
+ *
+ *  Look at the start of the packet body (a public or secret key or subkey) and verify that it is a
+ *  ed25519 key packet.
+ *
+ *  @param buf byte array holding packet body
+ *  @param buf_len num bytes in buf
+ *  return int 1 if ed25519 key, 0 otherwise
+ */
+int
+gpg_packet_is_ed25519_key(const u_char * buf, int buf_len)
+{
+
+    if (buf_len < (int) (GPG_KEY_PKT_PKALGO_OFFSET + 1 + sizeof(ed25519_oid)) ||
+        buf[GPG_KEY_PKT_PKALGO_OFFSET] != GPG_PKALGO_ECDSA ||
+        memcmp(buf + GPG_KEY_PKT_PKALGO_OFFSET + 1, ed25519_oid, sizeof(ed25519_oid)) != 0) {
+        return 0;
+    } else {
+        return 1;
+    }
+}
 
 /**
  *  Check whether the body of a packet is a curve25519 key
@@ -147,11 +239,9 @@ struct curve25519_param_entry curve25519_param[] = {
 int
 gpg_packet_is_curve25519_key(const u_char * buf, int buf_len)
 {
-#define GPG_SUBKEY_PKALGO_OFFSET    5       //  # bytes at start of packet body before the algorithm type
-
-    if (buf_len < (int) (GPG_SUBKEY_PKALGO_OFFSET + 1 + sizeof(curve25519_oid)) ||
-        buf[GPG_SUBKEY_PKALGO_OFFSET] != GPG_PKALGO_ECDH ||
-        memcmp(buf + GPG_SUBKEY_PKALGO_OFFSET + 1, curve25519_oid, sizeof(curve25519_oid)) != 0) {
+    if (buf_len < (int) (GPG_KEY_PKT_PKALGO_OFFSET + 1 + sizeof(curve25519_oid)) ||
+        buf[GPG_KEY_PKT_PKALGO_OFFSET] != GPG_PKALGO_ECDH ||
+        memcmp(buf + GPG_KEY_PKT_PKALGO_OFFSET + 1, curve25519_oid, sizeof(curve25519_oid)) != 0) {
         return 0;
     } else {
         return 1;
@@ -159,23 +249,11 @@ gpg_packet_is_curve25519_key(const u_char * buf, int buf_len)
 }
 
 /**
- *  Return the offset from start of packet to find cv25519 public key value
- *
- *  This is the number of bytes from the start of a public or secret key or subkey packet to skip to find
- *  the start of a curve25519 public key value (as an MPI, with two byte bit length prefix).
- */
-int
-get_gpg_curve25519_key_offset(void)
-{
-    return GPG_SUBKEY_PKALGO_OFFSET + 1 + sizeof(curve25519_oid);
-}
-
-/**
  *  Do cv25519 "clamp" operation then reverse key byte array.
  *
- *  Deep in the bowels of the key generation, the secret key was "clamped" before generating the public
- *  key, but it didn't actually change the bits in the secret key it returned. We'll go ahead and do that,
- *  to avoid confusion.
+ *  Deep in the bowels of the LibSodium operations to multiply a point by a scalar, the scalar multiplier
+ *  (which is the secret key) is "clamped" before multiplying the point by it. In GPG, this clamping is not
+ *  automatically done on the multiplication operation, so we will go ahead and clamp the secret key here.
  *
  *  Also, libsodium's secret key has the low-order byte first, but libgcrypt/gpg has the high-order byte
  *  first. So just run through and reverse the secret key.
@@ -195,54 +273,25 @@ clamp_and_reverse_seckey(u_char * sk)
 }
 
 /**
- *  Generate GPG keygrip for RSA key.
- *
- *  The GPG keygrip is a shortened representation (i.e. hash) of the parameters of the public key. The hash
- *  is just SHA1. The RSA keygrip is so much simpler than the curve25519 one - an RSA keygrip is just a SHA1
- *  hash of the public key parameter n.
- *
- *  @param key RSA key (only needs public params populated)
- *  @param grip Place to write keygrip. At least SHA_DIGEST_LENGTH bytes.
- */
-void
-generate_gpg_rsa_keygrip(const Key * rsa_key, u_char * grip)
-{
-    u_char   tmp_n[2 * GPG_MAX_KEY_SIZE + 1];
-    u_char * tmp_ptr;
-
-    //  Extract the public key parameter n from the bignum, prepend a zero if necessary to make
-    //  sure the high bit isn't set, then hash.
-    tmp_n[0] = 0x00;
-    int n_len = BN_bn2bin(rsa_key->rsa->n, tmp_n + 1);
-    if (tmp_n[1] > 0x7f) {
-        n_len++;
-        tmp_ptr = tmp_n;
-    } else {
-        tmp_ptr = tmp_n + 1;
-    }
-
-    iron_compute_sha1_hash_chars(tmp_ptr, n_len, grip);
-}
-
-/**
- *  Generate GPG keygrip for curve25519 key.
+ *  Generate GPG keygrip for an ed25519 or curve25519 key.
  *
  *  The GPG keygrip is a shortened representation (i.e. hash) of the parameters of the public key. The hash
  *  is just SHA1.
  *
- *  @param q Curve25519 public key
- *  @param q_len Num bytes in q
+ *  @param pub_key public key
+ *  @param key_len Num bytes in pub_key
  *  @param grip Place to write keygrip. At least SHA_DIGEST_LENGTH bytes.
  */
-void
-generate_gpg_curve25519_keygrip(const u_char * q, int q_len, u_char * grip)
+static void
+generate_ecc_keygrip(const curve_param_entry * params, int num_params, const u_char * pub_key, int key_len,
+        u_char * grip)
 {
     struct sshbuf * b = sshbuf_new();
     char buf[32];
-    struct curve25519_param_entry * ptr = curve25519_param;
+    const curve_param_entry * ptr = params;
     int len;
 
-    for (size_t ct = 0; ct < sizeof(curve25519_param) / sizeof(struct curve25519_param_entry); ct++) {
+    for (int ct = 0; ct < num_params; ct++) {
         len = snprintf(buf, sizeof(buf), "(1:%c%u:", ptr->param_name, ptr->len);
         sshbuf_put(b, buf, len);
         sshbuf_put(b, ptr->value, ptr->len);
@@ -253,14 +302,47 @@ generate_gpg_curve25519_keygrip(const u_char * q, int q_len, u_char * grip)
     //  Can't use iron_put_num_sexpr here, because in this context, GPG doesn't add the preceding 00 octet if the
     //  high bit of the first octet is set. Thanks for the consistency, GPG.
     //iron_put_num_sexpr(b, q, q_len);
-    sshbuf_putf(b, "(1:q%d:", q_len);
-    sshbuf_put(b, q, q_len);
+    sshbuf_putf(b, "(1:q%d:", key_len);
+    sshbuf_put(b, pub_key, key_len);
     sshbuf_put_u8(b, ')');
     iron_compute_sha1_hash_sshbuf(b, grip);
+    sshbuf_free(b);
 }
 
 /**
- *  Compute String-to-Key (s2k) key from passphrase.
+ *  Generate GPG keygrip for ed25519 key.
+ *
+ *  The GPG keygrip is a shortened representation (i.e. hash) of the parameters of the public key. The hash
+ *  is just SHA1.
+ *
+ *  @param pub_key Ed25519 public key (crypto_sign_PUBLICKEYBYTES)
+ *  @param grip Place to write keygrip. At least SHA_DIGEST_LENGTH bytes.
+ */
+void
+generate_gpg_ed25519_keygrip(const u_char * pub_key, u_char * grip)
+{
+    generate_ecc_keygrip(ed25519_param, sizeof(ed25519_param) / sizeof(curve_param_entry),
+            pub_key, crypto_sign_PUBLICKEYBYTES, grip);
+}
+
+/**
+ *  Generate GPG keygrip for curve25519 key.
+ *
+ *  The GPG keygrip is a shortened representation (i.e. hash) of the parameters of the public key. The hash
+ *  is just SHA1.
+ *
+ *  @param pub_key Curve25519 public key (crypto_box_PUBLICKEYBYTES)
+ *  @param grip Place to write keygrip. At least SHA_DIGEST_LENGTH bytes.
+ */
+void
+generate_gpg_curve25519_keygrip(const u_char * pub_key, u_char * grip)
+{
+    generate_ecc_keygrip(curve25519_param, sizeof(curve25519_param) / sizeof(curve_param_entry), pub_key,
+            crypto_box_PUBLICKEYBYTES, grip);
+}
+
+/**
+ *  Compute String-to-Key (s2k) key from passphrase
  *
  *  Uses the GPG algorithm to convert a passphrase into a key that can be used for symmetric key encryption.
  *  Why use a standard PBKDF?
@@ -292,10 +374,10 @@ generate_gpg_curve25519_keygrip(const u_char * q, int q_len, u_char * grip)
  */
 static void
 compute_gpg_s2k_key(const char * passphrase, int key_len, const u_char * salt, int bytes_to_hash,
-                    u_char * key)
+        u_char * key)
 {
     int len = strlen(passphrase) + S2K_SALT_BYTES;
-    u_char * salted_passphrase = malloc(len);
+    u_char * salted_passphrase = xmalloc(len);
 
     memcpy(salted_passphrase, salt, S2K_SALT_BYTES);
     memcpy(salted_passphrase + S2K_SALT_BYTES, passphrase, len - S2K_SALT_BYTES);
@@ -344,104 +426,181 @@ compute_gpg_s2k_key(const char * passphrase, int key_len, const u_char * salt, i
 }
 
 /**
- *  Create a passphrase from an SSH RSA key
+ *  Create a passphrase by signing pub key fingerprint
  *
- *  Generate a text passphrase to secure the GPG secret keys created from an SSH RSA key. This is a
- *  somewhat tricky proposition - we want to have the ability to generate this passphrase tied to the
- *  ability to access the SSH key, and we want to take advantage of the ssh-agent's caching of private
- *  key info. So we are going to hash the RSA public key, then attempt to sign it. This should send a
- *  request to the ssh-agent, and if the agent isn't available or doesn't have the RSA key cached, should
- *  prompt the user for the passphrase. The signature is as long as the RSA key, which is a lot. We take
- *  the first 32 bytes of the passphrase and base64 encode them to form the passphrase.
+ *  If the SSH key type is RSA or Ed25519, then the signature for a given keypair and input is deterministic.
+ *  We will take advantage of that and the fact that ssh-agent caches private key info and computes signatures.
+ *  Compute the fingerprint of the SSH public key then attempt to sign it. This should send a request to the
+ *  ssh-agent, and if the agent isn't available or doesn't have the SSH key cached, should prompt the user for
+ *  the passphrase. The signature is as long as the SSH key, which could be very long. We take the first 32
+ *  bytes of the signature and base64 encode them to form the passphrase.
  *
- *  @param rsa_key Byte array containing the public RSA key
- *  @param passphrase Place to put generated passphrase (at least PPHRASE_LEN bytes)
- *  @returns int 0 if successful, negative number if error
+ *  @param pub_key public SSH key parameters (should be either RSA or Ed25519)
+ *  @param passphrase place to put generated passphrase (at least PPHRASE_LEN bytes)
+ *  @return int 0 if successful, negative number if error
  */
-int
-generate_gpg_passphrase_from_rsa(const Key * rsa_key, char * passphrase)
+static int
+generate_passphrase_by_signature(const Key * pub_key, char * passphrase)
 {
-    static int    cached_len = -1;
-    static u_char cached_params[GPG_MAX_KEY_SIZE * 2];
-    static char    cached_passphrase[PPHRASE_LEN];
+    int retval = -1;
+    u_char * fp;
+    size_t   fp_len;
 
-    u_char params[GPG_MAX_KEY_SIZE * 2];
-    int params_len = BN_bn2bin(rsa_key->rsa->n, params);
-    params_len += BN_bn2bin(rsa_key->rsa->e, params + params_len);
-
-    if (params_len == cached_len && memcmp(cached_params, params, params_len) == 0) {
-        strcpy(passphrase, cached_passphrase);
-        return 0;
+    if (pub_key->type == KEY_RSA) {
+        //  For RSA keys, we need to generate the "fingerprint" using the same data the previous version of the
+        //  program used, so we can come up with the same passphrase and thus decrypt files that were encrypted
+        //  with the previous version.
+        fp_len = BN_num_bytes(pub_key->rsa->n) + BN_num_bytes(pub_key->rsa->e);
+        fp = xmalloc(fp_len);
+        u_char * t_ptr = fp;
+        t_ptr += BN_bn2bin(pub_key->rsa->n, t_ptr);
+        t_ptr += BN_bn2bin(pub_key->rsa->e, t_ptr);
+    } else if (sshkey_fingerprint_raw(pub_key, SSH_DIGEST_SHA1, &fp, &fp_len) != 0) {
+        error("Unable to compute fingerprint for SSH key.");
+        return -1;
     }
 
-    int retval = -1;
-
-    //  Ask the agent to sign the params. (It will actually compute a hash from the data and sign that.)
+    //  Ask the agent to sign the fingerprint. (It will actually compute a hash and sign that.)
     //  If the agent isn't running, retrieve the private key and sign the params in process (will prompt
-    //  for passphrase for secret RSA key).
+    //  for passphrase for secret SSH key).
     u_char * signature = NULL;
     size_t   sig_len;
     int      agent_fd;
 
     if (ssh_get_authentication_socket(&agent_fd) == 0) {
-        //  Using this busted old SHA1 hash because even fairly recent versions of ssh-agent seem to
-        //  ignore "rsa-sha2-256" and just pick "ssh-rsa" anyway.
-        if (ssh_agent_sign(agent_fd, (Key *) rsa_key, &signature, &sig_len, params, params_len,
-                           "ssh-rsa", 0) != 0) {
+        //  Specify NULL for the hash algorithm - for RSA keys, this defaults to "ssh-rsa", which is SHA1. That's
+        //  fine, since several versions of ssh-agent seem to ignore "rsa-sha2-256" and just pick "ssh-rsa" anyway.
+        if (ssh_agent_sign(agent_fd, (Key *) pub_key, &signature, &sig_len, fp, fp_len, NULL, 0) != 0) {
             signature = NULL;
         }
     }
 
     if (signature == NULL) {
         //  No authentication agent, or the authentication agent didn't have the secret key, means we
-        //  need user's private key to sign the hash. If the private params are set in the provided sshkey,
-        //  just use them. Otherwise, need to fetch them from the user's private key file.
-        Key * key = NULL;
-        if (rsa_key->rsa->d == NULL) {
-            //  Private key not populated - fetch from file
-            int rv = iron_retrieve_ssh_private_key("To decrypt file, enter passphrase for SSH key: ",
-                                                   &key);
-            if (rv != 0) {
-                error("Unable to retrieve SSH key: %s", ssh_err(rv));
-                retval = -2;
-                key = NULL;
-            }
-        } else {
-            key = (Key *) rsa_key;
+        //  need user's private key to sign the hash - need to fetch them from the user's private key file.
+        Key * sec_key = NULL;
+        int rv = get_ssh_private_key(&sec_key);
+        if (rv != 0) {
+            error("Unable to retrieve private SSH key: %s", ssh_err(rv));
+            retval = -2;
+            sec_key = NULL;
         }
 
-        if (key != NULL) {
-            int rv = sshkey_sign(key, &signature, &sig_len, params, params_len, "ssh-rsa", 0);
+        if (sec_key != NULL) {
+            int rv = sshkey_sign(sec_key, &signature, &sig_len, fp, fp_len, NULL, 0);
             if (rv != 0) {
                 error("Error generating signature for passphrase - %s.", ssh_err(rv));
                 retval = -4;
             }
-        }
-        if (key != rsa_key) {
-            sshkey_free(key);
+            sshkey_free(sec_key);
         }
     }
 
     if (signature != NULL) {
+        //  The signature has a four byte lenth (MSB first), a string identifying the signing algorithm, another
+        //  four byte length, and the signature. Find the meaty signature bits.
         u_char * sptr = signature;
         u_int32_t len = iron_buf_to_int(sptr);
         sptr += 4 + len;
         len = iron_buf_to_int(sptr);
         sptr += 4;
         if ((sig_len - len) != (size_t) (sptr - signature)) {
-            error("Unrecognized format for RSA signature. Unable to generate passphrase.");
+            error("Unrecognized format for SSH signature. Unable to generate passphrase.");
             retval = -5;
         } else {
             uuencode(sptr, PRE_ENC_PPHRASE_BYTES, passphrase, PPHRASE_LEN);
-
-            cached_len = params_len;
-            memcpy(cached_params, params, params_len);
-            strcpy(cached_passphrase, passphrase);
-
             retval = 0;
         }
         free(signature);
     }
+    free(fp);
+
+    return retval;
+}
+
+/**
+ *  Create a passphrase by hashing secret key
+ *
+ *  If the SSH key type is DSA or ECDSA, then the signature for a given keypair and input is non-deterministic,
+ *  so we can't use the trick we did with RSA and Ed25519 keys to generate a passphrase. Instead, we grab the
+ *  private key (which can't use the ssh-agent, even if it's configured and has the key cached) - so the user will
+ *  need to enter the SSH key passphrase once each session. Once we get the private key, repeatedly hash it, then
+ *  base64 encode the first 32 bytes of the hash to form the passphrase.
+ *
+ *  @param pub_key public SSH key parameters (should be either DSA or ECDSA)
+ *  @param passphrase place to put generated passphrase (at least PPHRASE_LEN bytes)
+ *  @return int 0 if successful, negative number if error
+ */
+static int
+generate_passphrase_by_hash(char * passphrase)
+{
+    Key * sec_key = NULL;
+    int retval = get_ssh_private_key(&sec_key);
+    if (retval == 0) {
+        const BIGNUM * priv_key;
+
+        if (sec_key->dsa != NULL) priv_key = sec_key->dsa->priv_key;
+        else if (sec_key->ecdsa != NULL) priv_key = EC_KEY_get0_private_key(sec_key->ecdsa);
+        else {
+            error("SSH key was not either DSA or ECDSA.");
+            retval = -2;
+        }
+
+        if (retval == 0) {
+            //  We will hash the private key A LOT to generate the final value - assuming the key is 32 bytes,
+            //  hashing it 32768 times runs 1MB through the hash.
+            int len = BN_num_bytes(priv_key);
+            u_char * hash_str = xmalloc(len);
+            BN_bn2bin(priv_key, hash_str);
+            SHA256_CTX ctx;
+            SHA256_Init(&ctx);
+            for (int i = 0; i < 32768; i++) SHA256_Update(&ctx, hash_str, len);
+            u_char hash[PRE_ENC_PPHRASE_BYTES];
+            bzero(hash, sizeof(hash));
+            SHA256_Final(hash, &ctx);
+            uuencode(hash, sizeof(hash), passphrase, PPHRASE_LEN);
+        }
+    } else {
+        error("Unable to retrieve private SSH key: %s", ssh_err(retval));
+    }
+
+    return retval;
+}
+
+/**
+ *  Create a passphrase to secure secret keys
+ *
+ *  Generate a text passphrase to secure the GPG secret keys. We only want to allow access to the GPG keys
+ *  if the user has access to an SSH key. We grab the public SSH key from ~/.ssh/ironcore/id_iron.pub and
+ *  compute a passphrase from that based on the type of key.
+ *
+ *  @param passphrase place to put generated passphrase (at least PPHRASE_LEN bytes)
+ *  @returns int 0 if successful, negative number if error
+ */
+int
+generate_gpg_passphrase(char * passphrase)
+{
+    static char   cached_passphrase[PPHRASE_LEN] = { '\0' };
+
+    if (*cached_passphrase != '\0') {
+        strcpy(passphrase, cached_passphrase);
+        return 0;
+    }
+
+    int retval = -1;
+    Key * pub_key;
+    if (get_ssh_public_key(&pub_key) != 0) {
+        return -1;
+    }
+
+    if (pub_key->rsa != NULL || pub_key->ed25519_pk != NULL) {
+        retval = generate_passphrase_by_signature(pub_key, passphrase);
+    } else {
+        retval = generate_passphrase_by_hash(passphrase);
+    }
+
+    if (retval == 0) strcpy(cached_passphrase, passphrase);
+    sshkey_free(pub_key);
 
     return retval;
 }
@@ -512,6 +671,51 @@ generate_gpg_kek(const u_char * fp, const u_char * shared_point, u_char * kek)
 }
 
 /**
+ *  Generate the public parameters for an Ed25519 or Cv25519 key
+ *
+ *  Format the public parms into an sshbuf that can be written to a public key file.
+ *
+ *  @param oid OID string identifying type of curve
+ *  @param oid_len num bytes in oid
+ *  @param pub_key key value to write
+ *  @param pk_len num bytes in pub_key
+ *  @param buf place to write the generated params
+ */
+static void
+generate_ecc_pubkey_parms(const char * oid, int oid_len, const u_char * pub_key, int pk_len, struct sshbuf * buf)
+{
+    sshbuf_put(buf, oid, oid_len);
+
+    /* A bit more GPG/libgcrypt fun - the public key parameter q needs to be prefixed by an octet that indicates
+     * that it is only the x coordinate. However, we need the unprefixed key for other uses, so we need to remember
+     * to add the prefix only in the necessary spots. Bad GPG! Anyway, create a separate copy of the parameter that
+     * includes the prefix to put into the public subkey packet.
+     */
+    u_char prefixed_pk[crypto_sign_PUBLICKEYBYTES + 1];
+    prefixed_pk[0] = GPG_ECC_PUBKEY_PREFIX;
+    memcpy(prefixed_pk + 1, pub_key, pk_len);
+    BIGNUM * pk = BN_new();
+    BN_bin2bn(prefixed_pk, pk_len + 1, pk);
+    iron_put_bignum(buf, pk);
+    BN_clear_free(pk);
+}
+
+/**
+ *  Generate the public parameters for an Ed25519 key
+ *
+ *  Format the public parms into an sshbuf that can be written to a public key file.
+ *
+ *  @param pub_key key value to write
+ *  @param pk_len num bytes in pub_key
+ *  @param buf place to write the generated params
+ */
+void
+generate_gpg_ed25519_pubkey_parms(const u_char * pub_key, struct sshbuf * buf)
+{
+    generate_ecc_pubkey_parms(ed25519_oid, sizeof(ed25519_oid), pub_key, crypto_sign_PUBLICKEYBYTES, buf);
+}
+
+/**
  *  Generate the public parameters for a CV25519 key
  *
  *  Format the public parms into an sshbuf that can be written to a public key file.
@@ -521,23 +725,9 @@ generate_gpg_kek(const u_char * fp, const u_char * shared_point, u_char * kek)
  *  @param buf place to write the generated params
  */
 void
-generate_gpg_curve25519_pubkey_parms(const u_char * pub_key, int pk_len, struct sshbuf * buf)
+generate_gpg_curve25519_pubkey_parms(const u_char * pub_key, struct sshbuf * buf)
 {
-    sshbuf_put(buf, curve25519_oid, sizeof(curve25519_oid));
-
-    /* A bit more GPG/libgcrypt fun - the public key parameter q needs to be prefixed by an octet that indicates
-     * that it is only the x coordinate. However, we need the unprefixed key for other uses, so we need to remember
-     * to add the prefix only in the necessary spots. Bad GPG! Anyway, create a separate copy of the parameter that
-     * includes the prefix to put into the public subkey packet.
-     */
-    u_char * prefixed_pk = malloc(pk_len + 1);
-    *prefixed_pk = GPG_ECC_PUBKEY_PREFIX;
-    memcpy(prefixed_pk + 1, pub_key, pk_len);
-    BIGNUM * pk = BN_new();
-    BN_bin2bn(prefixed_pk, pk_len + 1, pk);
-    iron_put_bignum(buf, pk);
-    BN_clear_free(pk);
-    free(prefixed_pk);
+    generate_ecc_pubkey_parms(curve25519_oid, sizeof(curve25519_oid), pub_key, crypto_box_PUBLICKEYBYTES, buf);
 
     //  The last parameter specifies the hash algorithm and the encryption algorithm used to derive the key
     //  encryption key (KEK).
@@ -545,54 +735,65 @@ generate_gpg_curve25519_pubkey_parms(const u_char * pub_key, int pk_len, struct 
 }
 
 /**
- *  Recover the RSA public key from pubkey packet body.
- *
- *  Will fill in the n and e parameters in the rsa_key.
+ *  Recover ed25519 public key from pubkey packet body
  *
  *  @param buf Pubkey packet body
- *  @param rsa_key Place to write recovered RSA public key. Caller needs to RSA_free rsa_key->rsa
- *  @return int 0 if successful, negative number if error
+ *  @param key Place to write recovered ed25519 public key (at least crypto_sign_PUBLICKEYBYTES)
+ *  @return int num bytes written to key if successful, negative number if error
  */
-#define MIN_PUBKEY_PKT_LEN 14       //  version, 4-byte timestamp, algo, 2 2-byte MPI lengths, 2 2-byte MPIs
-
 int
-extract_gpg_rsa_pubkey(const struct sshbuf * buf, Key * rsa_key)
+extract_gpg_ed25519_pubkey(const struct sshbuf * buf, u_char * key)
 {
-    int retval = -1;
-    const u_char * ptr = sshbuf_ptr(buf);
-    int len = sshbuf_len(buf);
-    if (len >= MIN_PUBKEY_PKT_LEN) {
-        ptr += 5;                   //  Skip version, 4-byte timestamp
-        if (*ptr == GPG_PKALGO_RSA_ES) {    //  Make sure the algorithm is what we expect
-            ptr++;
-            int key_len = (*ptr << 8) + *(ptr + 1);
-            ptr += 2;
-            key_len = (key_len + 7) / 8;    //  Convert from bites to bytes
-            if (key_len <= GPG_MAX_KEY_SIZE) {
-                RSA_free(rsa_key->rsa);
-                rsa_key->rsa = RSA_new();
-                rsa_key->rsa->n = BN_new();
-                BN_bin2bn(ptr, key_len, rsa_key->rsa->n);
-                ptr += key_len;
-                //  Now grab the e value (another MPI)
-                key_len = (*ptr << 8) + *(ptr + 1);
-                ptr += 2;
-                key_len = (key_len + 7) / 8;    //  Convert from bites to bytes
-                rsa_key->rsa->e = BN_new();
-                BN_bin2bn(ptr, key_len, rsa_key->rsa->e);
-                retval = 0;
-            } else {
-                error("Key data too long in RSA public key. Unable to retrieve key.");
-            }
+    int key_len = -1;
+
+    if (sshbuf_len(buf) >= GPG_ED25519_PUBKEY_PKT_LEN) {
+        const u_char * key_ptr = sshbuf_ptr(buf) + GPG_KEY_PKT_PKALGO_OFFSET + 1 + sizeof(ed25519_oid);
+        key_len = (*key_ptr << 8) + *(key_ptr + 1);
+        //  Size in bits from the header of the MPI - convert to bytes, then deduct leading 0x40
+        key_len = (key_len + 7) / 8 - 1;
+        key_ptr += 2;
+        if (*(key_ptr++) == GPG_ECC_PUBKEY_PREFIX) {
+            memcpy(key, key_ptr, key_len);
         } else {
-            error("Unexpected public key algorithm in RSA public key. Unable to retrieve key.");
+            error("Invalid format for public signing key - could not recover data.");
+            key_len = -1;
         }
     } else {
-        error("Data in  RSA public key too short. Unable to retrieve key.");
-
+        error("Data in public key packet too short. Unable to retrieve key.");
     }
 
-    return retval;
+    return key_len;
+}
+
+/**
+ *  Recover curve25519 public key from pubkey packet body
+ *
+ *  @param buf Pubkey packet body
+ *  @param key Place to write recovered curve25519 public key (at least crypto_box_PUBLICKEYBYTES)
+ *  @return int num bytes written to key if successful, negative number if error
+ */
+int
+extract_gpg_curve25519_pubkey(const struct sshbuf * buf, u_char * key)
+{
+    int key_len = -1;
+
+    if (sshbuf_len(buf) >= GPG_CV25519_PUBKEY_PKT_LEN) {
+        const u_char * key_ptr = sshbuf_ptr(buf) + GPG_KEY_PKT_PKALGO_OFFSET + 1 + sizeof(curve25519_oid);
+        key_len = (*key_ptr << 8) + *(key_ptr + 1);
+        //  Size in bits from the header of the MPI - convert to bytes, then deduct leading 0x40
+        key_len = (key_len + 7) / 8 - 1;
+        key_ptr += 2;
+        if (*(key_ptr++) == GPG_ECC_PUBKEY_PREFIX) {
+            memcpy(key, key_ptr, key_len);
+        } else {
+            error("Invalid format for public encryption key - could not recover data.");
+            key_len = -1;
+        }
+    } else {
+        error("Data in public key packet too short. Unable to retrieve key.");
+    }
+
+    return key_len;
 }
 
 /**
@@ -666,7 +867,7 @@ encrypt_gpg_sec_parms(const struct sshbuf * buf, const u_char * passphrase, u_ch
     int retval = cipher_init(&ciphercontext, cipher, key, sizeof(key), iv, iv_len, CIPHER_ENCRYPT);
 
     if (retval == 0) {
-        u_char * input = malloc(sshbuf_len(buf) + AES128_KEY_BYTES);
+        u_char * input = xmalloc(sshbuf_len(buf) + AES128_KEY_BYTES);
         memcpy(input, sshbuf_ptr(buf), sshbuf_len(buf));
         randombytes_buf(input + sshbuf_len(buf), AES128_KEY_BYTES);
         int enc_len = AES128_KEY_BYTES * ((sshbuf_len(buf) + AES128_KEY_BYTES) / AES128_KEY_BYTES);
@@ -794,7 +995,7 @@ extract_gpg_sym_key(const u_char * msg, const gpg_public_key * pub_keys, const u
     u_char kek[AES256_KEY_BYTES];
     u_char frame[AES256_KEY_BYTES + AES_WRAP_BLOCK_SIZE];
 
-    generate_gpg_kek(pub_keys->fp, secret, kek);
+    generate_gpg_kek(pub_keys->enc_fp, secret, kek);
     int enc_frame_len = *(msg++);
     int frame_len = decrypt_gpg_key_frame(msg, enc_frame_len, kek, frame);
     if (frame_len == sizeof(frame) && *frame == GPG_SKALGO_AES256) {
@@ -829,118 +1030,6 @@ generate_gpg_protected_at(char * str)
 }
 
 /**
- *  Write RSA public parameter S-expression to sshbuf.
- *
- *  Generate an S-expression containing the RSA public parameters (n and e) and write the string
- *  to an sshbuf.
- *
- *  @param ssh_key RSA key
- *  @return sshbuf * Pointer to sshbuf containing S-expression. Caller should ssh_free.
- */
-static struct sshbuf *
-generate_gpg_rsa_pub_parms(const Key * ssh_key)
-{
-    struct sshbuf * pub_parms = sshbuf_new();
-    u_char tmp[512];
-    int len = BN_bn2bin(ssh_key->rsa->n, tmp);
-    sshbuf_put(pub_parms, "(1:n", 4);
-    iron_put_num_sexpr(pub_parms, tmp, len);
-    len = BN_bn2bin(ssh_key->rsa->e, tmp);
-    sshbuf_put(pub_parms, ")(1:e", 5);
-    iron_put_num_sexpr(pub_parms, tmp, len);
-    sshbuf_put_u8(pub_parms, ')');
-
-    return pub_parms;
-}
-
-/**
- *  Write a parenthesized S-expression into buffer.
- *
- *  Given one of the parameters for a public or secret key (all of which have one-character names, like 'p' or 'n'),
- *  generate a string like "(1:q5:@1234)".
- *
- *  @param buf Place to write S-expression
- *  @param parm_name One-character name for parameter
- *  @param bn Value to write for parameter
- */
-static void
-put_parm_in_sexpr(struct sshbuf * buf, char parm_name, BIGNUM * bn)
-{
-    u_char tmp[2 * GPG_MAX_KEY_SIZE];
-    int len = BN_bn2bin(bn, tmp);
-    sshbuf_put(buf, "(1:", 3);
-    sshbuf_put_u8(buf, parm_name);
-    iron_put_num_sexpr(buf, tmp, len);
-    sshbuf_put_u8(buf, ')');
-}
-
-/**
- *  Retrieve an RSA parameter value from an S-expr
- *
- *  Read the param value from byte array containing an S_Expression of the form "(1:<paramName><len>:<param>)"
- *  and stick that param value into a bignum.
- *
- *  @param buf Byte array to read
- *  @param parm_name Something like 'd', 'p', 'q', etc.
- *  @param bn Pointer to place to create and populate BIGNUM to hold param value
- *  @return int Num bytes consumed from buf if successful, negative number if error
- */
-static int
-get_parm_from_sexpr(const u_char * buf, char parm_name, BIGNUM ** bn)
-{
-    int retval = -1;
-    u_char tmp[8];
-    const u_char * ptr = buf;
-
-    sprintf(tmp, "(1:%c", parm_name);
-    if (strncmp(ptr, tmp, 4) == 0) {
-        ptr += 4;
-        errno = 0;
-        int bn_len = strtol(ptr, (char **) &ptr, 10);
-        ptr++;  // Skip ':'
-        if (errno != EINVAL && errno != ERANGE && bn_len > 0) {
-            *bn = BN_new();
-            if (*bn != NULL) {
-                BN_bin2bn(ptr, bn_len, *bn);
-                ptr += bn_len;
-                if (*(ptr++) == ')') {
-                    retval = ptr - buf;
-                }
-            }
-        }
-    }
-
-    return retval;
-}
-
-/**
- *  Write RSA secret parameter S-expression to sshbuf.
- *
- *  Generate an S-expression containing the RSA secret parameters (d, p, q, u) and write the string
- *  to an sshbuf.
- *
- *  A little bit of fun - OpenSSL stores the p and q parameter such that p > q, while GPG/libgcrypt expect p < q.
- *  Also, OpenGPG expects parameter u = p^(-1) mod q, while OpenSSL has iqmp = q^(-1) mod p. Luckily, when we swap
- *  p and q, that automagically changes iqmp to u, without any recomputation.
- *
- *  @param ssh_key RSA key
- *  @return sshbuf * Pointer to sshbuf containing S-expression, or NULL if error. Caller should ssh_free.
- */
-static struct sshbuf *
-generate_gpg_rsa_sec_parms(const Key * ssh_key)
-{
-    struct sshbuf * sec_parms = sshbuf_new();
-    if (sec_parms != NULL) {
-        put_parm_in_sexpr(sec_parms, 'd', ssh_key->rsa->d);
-        put_parm_in_sexpr(sec_parms, 'p', ssh_key->rsa->q); // The p-q swapperoo
-        put_parm_in_sexpr(sec_parms, 'q', ssh_key->rsa->p); // The p-q swapperoo, part 2
-        put_parm_in_sexpr(sec_parms, 'u', ssh_key->rsa->iqmp);
-    }
-
-    return sec_parms;
-}
-
-/**
  *  Decrypt secret key data
  *
  *  Unencrypt the block containing the secret key parameters, given the SSH RSA key (to generate the
@@ -955,8 +1044,7 @@ generate_gpg_rsa_sec_parms(const Key * ssh_key)
  *  @return u_char * Decrypted parameter expression, or NULL if error. Caller should free
  */
 static u_char *
-decrypt_gpg_sec_parms(const u_char * enc_data, int len, const Key * rsa_pubkey, const u_char * salt, 
-                      int hash_bytes, const u_char * iv)
+decrypt_gpg_sec_parms(const u_char * enc_data, int len, const u_char * salt, int hash_bytes, const u_char * iv)
 {
     char * output = NULL;
 
@@ -964,14 +1052,14 @@ decrypt_gpg_sec_parms(const u_char * enc_data, int len, const Key * rsa_pubkey, 
     u_char sym_key[AES128_KEY_BYTES];
     char   passphrase[PPHRASE_LEN];
 
-    if (generate_gpg_passphrase_from_rsa(rsa_pubkey, passphrase) == 0) {
+    if (generate_gpg_passphrase(passphrase) == 0) {
         compute_gpg_s2k_key(passphrase, sizeof(sym_key), salt, hash_bytes, sym_key);
 
         struct sshcipher_ctx ciphercontext;
         const struct sshcipher * cipher = cipher_by_name("aes128-cbc");
         if (cipher_init(&ciphercontext, cipher, sym_key, sizeof(sym_key), iv, GPG_SECKEY_IV_BYTES,
                         CIPHER_DECRYPT) == 0) {
-            output = malloc(len);
+            output = xmalloc(len);
             if (output != NULL) {
                 if (cipher_crypt(&ciphercontext, 0, output, enc_data, len, 0, 0) != 0) {
                     error("Decryption of RSA private key failed.");
@@ -993,16 +1081,15 @@ decrypt_gpg_sec_parms(const u_char * enc_data, int len, const Key * rsa_pubkey, 
  *  Finds the part of the S-expression containing the secret key parameters, decrypts it, and returns the
  *  nested S-expression containing the secret key parameters.
  *
- *  @param pub_parm_name Name of the preceding public parameter in S-Expr ('n' for RSA, 'q' for cv25519)
+ *  @param pub_parm_name Name of the preceding public parameter in S-Expr ('n' for RSA, 'q' for ed/cv25519)
  *  @param key_name Name of the algorithm corresponding to the key (for error msgs)
  *  @param buf Byte array containing S-expression
  *  @param buf_len Num bytes in buf
- *  @param ssh_key RSA key used to protect GPG key
+ *  @param ssh_key SSH key used to protect GPG key
  *  @return u_char * S-expression containing parms, or NULL if error. Caller should free
  */
 static u_char *
-extract_gpg_sec_parms(char pub_parm_name, const char * key_name, const u_char * buf, int buf_len,
-                      const Key * rsa_pubkey)
+extract_gpg_sec_parms(char pub_parm_name, const char * key_name, const u_char * buf, int buf_len)
 {
     u_char * sec_parms = NULL;
 
@@ -1060,7 +1147,7 @@ extract_gpg_sec_parms(char pub_parm_name, const char * key_name, const u_char * 
         //  ptr now points to the encrypted security parameters. Take that data, along with the necessary info
         //  to decrypt, and get the secret parameters decrypted. The decrypted byte array should be as long as
         //  the encrypted one.
-        sec_parms = decrypt_gpg_sec_parms(ptr, len, rsa_pubkey, salt, hash_bytes, iv);
+        sec_parms = decrypt_gpg_sec_parms(ptr, len, salt, hash_bytes, iv);
 
         ptr += len;
         if (*ptr != ')') {
@@ -1077,16 +1164,60 @@ out:
 }
 
 /**
- *  Recover RSA secret key from S-expression
+ *  Retrieve ed/cv25519 secret key param value
+ *
+ *  After an S-expression has been decrypted, recover the secret key value.
+ *
+ *  @param sec_parms S-expression containing secret ekey
+ *  @param sec_key Place to write secret key value (at least key_len bytes)
+ *  @param key_len Expected length of secret key
+ *  @returns 0 if successful, negative number if error
+ */
+static int
+extract_ecc_seckey(const u_char * sec_parms, u_char * sec_key, int key_len)
+{
+    int retval = -1;
+
+    if (strncmp(sec_parms, "(1:d", 4) == 0) {
+        const u_char * ptr = sec_parms + 4;
+        errno = 0;
+        int len = (int) strtoul(ptr, (char **) &ptr, 10);
+        if (errno != EINVAL && errno != ERANGE && len <= (key_len + 2) && *(ptr++) == ':') {
+            int pad_len = key_len - len;
+            if (pad_len > 0) {
+                memset(sec_key, 0, pad_len);
+            } else if (pad_len < 0) {
+                //  Leading 0 byte on secret key - skip it
+                ptr -= pad_len;
+                len += pad_len;
+                pad_len = 0;
+            }
+
+            memcpy(sec_key + pad_len, ptr, len);
+            retval = len;
+        } else {
+            error("Improperly formatted data in decrypted secret key - unable to process.");
+        }
+    } else {
+        error("Improperly formatted data in decrypted secret key - unable to process.");
+    }
+
+    return retval;
+}
+
+/**
+ *  Recover ed25519 secret key from S-expression
  *
  *  Finds the part of the S-expression containing the secret key, decrypts it, and recovers the key.
  *
  *  @param buf Byte array containing S-expression
- *  @param rsa_key RSA key used to protect GPG key - will be populated with secret parms
- *  @return int 0 if successful, negative number if error
+ *  @param buf_len Num bytes in buf
+ *  @parma pub_key Public ed25519 key corresponding to secret key
+ *  @param sec_key Place to write secret key (at least crypto_sign_SECRETKEYBYTES)
+ *  @return int Num bytes written to sec_key, negative number if error
  */
 int
-extract_gpg_rsa_seckey(const u_char * buf, int buf_len, Key * rsa_key)
+extract_gpg_ed25519_seckey(const u_char * buf, int buf_len, const u_char * pub_key, u_char * sec_key)
 {
     int retval = -1;
 
@@ -1094,41 +1225,32 @@ extract_gpg_rsa_seckey(const u_char * buf, int buf_len, Key * rsa_key)
     //  that the public key might contain binary data, so we need to skip over it to find the secret
     //  key. We do rely on the fact that the first 'q' in the string should be the start of the public
     //  key, and everything before that is ASCII.
-    u_char * sec_parms = extract_gpg_sec_parms('n', "RSA", buf, buf_len, rsa_key);
+    u_char * sec_parms = extract_gpg_sec_parms('q', "Ed25519", buf, buf_len);
     if (sec_parms != NULL) {
-        if (strncmp(sec_parms, "(((1:d", 6) == 0) {
-            u_char * ptr = sec_parms + 2;   //  Skip opening parens
+        //  After we found that, the Ed25519 secret key params include ANOTHER copy of the public key,
+        //  so we need to skip that again.
+        u_char * ptr = memchr(sec_parms, 'q', buf_len - (sec_parms - buf));
+        if (ptr != NULL) {
+            ptr++;
+            errno = 0;
+            int len = strtol(ptr, (char **) &ptr, 10);
+            ptr++;  // Skip ':'
+            if (errno == EINVAL || errno == ERANGE || len <= 0 || len > GPG_MAX_KEY_SIZE) return -1;
+            ptr += len;
 
-            int len = get_parm_from_sexpr(ptr, 'd', &(rsa_key->rsa->d));
-            if (len > 0) {
-                ptr += len;
-
-                len = get_parm_from_sexpr(ptr, 'p', &(rsa_key->rsa->q));        //  p-q swap
-                if (len > 0) {
-                    ptr += len;
-                    len = get_parm_from_sexpr(ptr, 'q', &(rsa_key->rsa->p));    //  Swap, part 2
-                    if (len > 0) {
-                        ptr += len;
-                        len = get_parm_from_sexpr(ptr, 'u', &(rsa_key->rsa->iqmp));
-                        if (len > 0) {
-                            retval = 0;
-                        }
-                    }
-                }
+            if (*(ptr++) != ')') return -1;
+            //  And now, we have finally reached the 'd' parameter. However, this is only half of the
+            //  Ed25519 secret key - the second half is ANOTHER copy of the public key. So grab the 
+            //  first half, then paste in the public key to complete the puzzle.
+            retval = extract_ecc_seckey(ptr, sec_key, crypto_sign_PUBLICKEYBYTES);
+            if (retval > 0) {
+                memcpy(sec_key + retval, pub_key, crypto_sign_PUBLICKEYBYTES);
+                retval += crypto_sign_PUBLICKEYBYTES;
             }
-
-            if (retval != 0) {
-                error("Unable to extract the RSA private key parameters from the key data.");
-            }
-        } else {
-            error("Could not decrypt RSA private key parameters correctly.");
         }
         free(sec_parms);
     }
 
-    if (retval != 0) {
-        error("Improperly formatted data in decrypted RSA secret key - unable to process.");
-    }
     return retval;
 }
 
@@ -1138,12 +1260,12 @@ extract_gpg_rsa_seckey(const u_char * buf, int buf_len, Key * rsa_key)
  *  Finds the part of the S-expression containing the secret key, decrypts it, and recovers the key.
  *
  *  @param buf Byte array containing S-expression
- *  @param ssh_key RSA key used to protect GPG key
- *  @param d Place to write secret key (should be crypto_box_SECRETKEYBYTES bytes)
- *  @return int Num bytes written to d, negative number if error
+ *  @param ssh_key SSH key used to protect GPG key
+ *  @param sec_key Place to write secret key (at least crypto_box_SECRETKEYBYTES)
+ *  @return int Num bytes written to sec_key, negative number if error
  */
 int
-extract_gpg_curve25519_seckey(const u_char * buf, int buf_len, const Key * ssh_key, u_char * d)
+extract_gpg_curve25519_seckey(const u_char * buf, int buf_len, u_char * sec_key)
 {
     int retval = -1;
 
@@ -1151,27 +1273,10 @@ extract_gpg_curve25519_seckey(const u_char * buf, int buf_len, const Key * ssh_k
     //  that the public key might contain binary data, so we need to skip over it to find the secret
     //  key. We do rely on the fact that the first 'q' in the string should be the start of the public
     //  key, and everything before that is ASCII.
-    u_char * sec_parms = extract_gpg_sec_parms('q', "Curve25519", buf, buf_len, ssh_key);
+    u_char * sec_parms = extract_gpg_sec_parms('q', "Curve25519", buf, buf_len);
     if (sec_parms != NULL) {
-        if (strncmp(sec_parms, "(((1:d", 6) == 0) {
-            u_char * ptr = sec_parms + 6;
-            errno = 0;
-            unsigned long len = strtoul(ptr, (char **) &ptr, 10);
-            if (errno != EINVAL && errno != ERANGE && len <= (crypto_box_SECRETKEYBYTES + 2) &&
-                    *(ptr++) == ':') {
-                int pad_len = crypto_box_SECRETKEYBYTES - len;
-                if (pad_len > 0) {
-                    memset(d, 0, pad_len);
-                }
-
-                memcpy(d + pad_len, ptr, len);
-                retval = len;
-            } else {
-                error("Improperly formatted data in decrypted secret key - unable to process.");
-            }
-        } else {
-            error("Improperly formatted data in decrypted secret key - unable to process.");
-        }
+        //  Skip over "((" at start of private key portion.
+        retval = extract_ecc_seckey(sec_parms + 2, sec_key, crypto_box_SECRETKEYBYTES);
         free(sec_parms);
     }
 
@@ -1179,132 +1284,102 @@ extract_gpg_curve25519_seckey(const u_char * buf, int buf_len, const Key * ssh_k
 }
 
 /**
- *  Generate S-expression containing RSA parameters.
+ *  Generate S-expression for Ed25519 or Cv25519 public key parameter.
  *
- *  Creates the S-expression that contains each of the parameters of the RSA key - first the public key
- *  (n and e), then a nested S-expression containing the secret key (d, p, q, u). The latter is encrypted
- *  before writing into the final S-expression.
- *
- *  NOTE: The passphrase is ASCII instead of UTF-8 or some other more inclusive format because it is not
- *  entered by the user, it is a base64-encoded hash of the RSA secret key plus salt.
- *
- *  @param ssh_key RSA key
- *  @param passphrase ASCII string used to protect encrypted portion
- *  @return sshbuf * Buffer containing S-expression. Caller should sshbuf_free
- */
-struct sshbuf *
-generate_gpg_rsa_seckey(const Key * ssh_key, const u_char * passphrase)
-{
-    /* First, we need to compute the hash of the key data. The string to be hashed is unfortunately not quite
-     * exactly the same format as the subsequent string to write to the key, so for now we won't worry about
-     * reusing pieces and parts.
-     */
-    struct sshbuf * seckey = NULL;
-    char protected_at[PROTECTED_AT_LEN];
-
-    generate_gpg_protected_at(protected_at);
-
-    struct sshbuf * pub_parms = generate_gpg_rsa_pub_parms(ssh_key);
-    struct sshbuf * sec_parms = generate_gpg_rsa_sec_parms(ssh_key);
-    struct sshbuf * hash_str = sshbuf_new();
-    struct sshbuf * sec_str = sshbuf_new();
-
-    if (pub_parms != NULL && sec_parms != NULL && hash_str != NULL && sec_str != NULL) {
-        sshbuf_put(hash_str, "(3:rsa", 6);
-        sshbuf_putb(hash_str, pub_parms);
-        sshbuf_putb(hash_str, sec_parms);
-        sshbuf_put(hash_str, protected_at, strlen(protected_at));
-        sshbuf_put_u8(hash_str, ')');
-
-        u_char hash[SHA_DIGEST_LENGTH];
-        iron_compute_sha1_hash_sshbuf(hash_str, hash);
-
-        sshbuf_put(sec_str, "((", 2);
-        sshbuf_putb(sec_str, sec_parms);
-        sshbuf_put_u8(sec_str, ')');
-        sshbuf_putf(sec_str, "(4:hash4:sha1%lu:", sizeof(hash));
-        sshbuf_put(sec_str, hash, sizeof(hash));
-        sshbuf_put(sec_str, "))", 2);
-
-        u_char salt[S2K_SALT_BYTES];
-        u_char iv[GPG_SECKEY_IV_BYTES];
-        struct sshbuf * enc_sec_parms = encrypt_gpg_sec_parms(sec_str, passphrase, salt, iv, sizeof(iv));
-        if (enc_sec_parms != NULL) {
-            seckey = sshbuf_new();
-            if (seckey != NULL) {
-                sshbuf_putf(seckey, "(21:protected-private-key(3:rsa");
-                sshbuf_putb(seckey, pub_parms);
-                sshbuf_put(seckey, GPG_SEC_PARM_PREFIX, strlen(GPG_SEC_PARM_PREFIX));
-                sshbuf_put(seckey, salt, sizeof(salt));
-                sshbuf_putf(seckey, "8:%08d)%d:", S2K_ITER_BYTE_COUNT, (int) sizeof(iv));
-                sshbuf_put(seckey, iv, sizeof(iv));
-                sshbuf_putf(seckey, ")%lu:", sshbuf_len(enc_sec_parms));
-                sshbuf_put(seckey, sshbuf_ptr(enc_sec_parms), sshbuf_len(enc_sec_parms));
-                sshbuf_put_u8(seckey, ')');
-                sshbuf_put(seckey, protected_at, strlen(protected_at));
-                sshbuf_put(seckey, "))", 2);
-            }
-            sshbuf_free(enc_sec_parms);
-        }
-    }
-    sshbuf_free(pub_parms);
-    sshbuf_free(sec_parms);
-    sshbuf_free(hash_str);
-    sshbuf_free(sec_str);
-
-    return seckey;
-}
-
-/**
- *  Generate S-expression for Cv25519 public key parameter.
- *
- *  @param q Curve25519 public key
- *  @param q_len Num bytes in q
+ *  @param pub_key Ed25519 or Cv25519 public key
+ *  @param pub_key_len num bytes in pub_key
+ *  @param prefix string to insert as start of S-expression 
  *  @return sshbuf * S-expression. Caller should sshbuf_free
  */
 static struct sshbuf *
-generate_gpg_curve25519_pub_parms(const u_char * q, int q_len)
+generate_gpg_ecc_pub_parms(const u_char * pub_key, int pub_key_len, const char * prefix)
 {
+    /* A bit more GPG/libgcrypt fun - the public key parameter q needs to be prefixed by an octet that indicates
+     * that it is only the x coordinate. However, we don't do this when generating the keygrip for the key. Bad
+     * GPG! Anyway, create a separate copy of the parameter that includes the prefix and use that in the appropriate
+     * places.
+     */
     struct sshbuf * pub_parms = sshbuf_new();
-    sshbuf_put(pub_parms, GPG_PUB_PARM_PREFIX, strlen(GPG_PUB_PARM_PREFIX));
-    iron_put_num_sexpr(pub_parms, q, q_len);
+    sshbuf_put(pub_parms, prefix, strlen(prefix));
+    put_x_coord_sexpr(pub_parms, pub_key, pub_key_len);
     sshbuf_put_u8(pub_parms, ')');
 
     return pub_parms;
 }
 
 /**
- *  Generate S-expression for Cv25519 secret key parameter.
+ *  Generate S-expression for Ed25519 public key parameter.
  *
- *  @param d Curve25519 secret key
- *  @param d_len Num bytes in d
+ *  @param pub_key Ed25519 public key (crypto_sign_PUBLICKEYBYTES + 1)
  *  @return sshbuf * S-expression. Caller should sshbuf_free
  */
 static struct sshbuf *
-generate_gpg_curve25519_sec_parms(const u_char * d, int d_len)
+generate_gpg_ed25519_pub_parms(const u_char * pub_key)
 {
-    struct sshbuf * sec_parms = sshbuf_new();
+    return generate_gpg_ecc_pub_parms(pub_key, crypto_sign_PUBLICKEYBYTES, GPG_ED_PUB_PARM_PREFIX);
+}
+
+/**
+ *  Generate S-expression for Cv25519 public key parameter.
+ *
+ *  @param pub_key Curve25519 public key (crypto_box_PUBLICKEYBYTES + 1)
+ *  @return sshbuf * S-expression. Caller should sshbuf_free
+ */
+static struct sshbuf *
+generate_gpg_curve25519_pub_parms(const u_char * pub_key)
+{
+    return generate_gpg_ecc_pub_parms(pub_key, crypto_box_PUBLICKEYBYTES, GPG_CV_PUB_PARM_PREFIX);
+}
+
+/**
+ *  Generate S-expression for Ed25519 secret key parameter
+ *
+ *  @param pub_key Public key
+ *  @param sec_key Secret key
+ *  @return sshbuf * S-expression. Caller should sshbuf_free
+ */
+static struct sshbuf *
+generate_gpg_ed25519_sec_parms(const u_char * pub_key, const u_char * sec_key)
+{
+    struct sshbuf * sec_parms = generate_gpg_ecc_pub_parms(pub_key, crypto_sign_PUBLICKEYBYTES, "(1:q");
     sshbuf_put(sec_parms, "(1:d", 4);
-    iron_put_num_sexpr(sec_parms, d, d_len);
+    //  Only the first half of the secret key is the "d" value. The second half is the public key value.
+    //  Don't ask me why.
+    iron_put_num_sexpr(sec_parms, sec_key, crypto_sign_PUBLICKEYBYTES);
     sshbuf_put_u8(sec_parms, ')');
 
     return sec_parms;
 }
 
 /**
- *  Generate S-expression containing cv25519 key (public and secret parts)
+ *  Generate S-expression for Cv25519 secret key parameter
  *
- *  Formats the GPG S-expression that holds an entire cv25519 key pair. The secret key is encrypted.
+ *  @param sec_key Secret key
+ *  @return sshbuf * S-expression. Caller should sshbuf_free
+ */
+static struct sshbuf *
+generate_gpg_curve25519_sec_parms(const u_char * sec_key)
+{
+    struct sshbuf * sec_parms = sshbuf_new();
+    sshbuf_put(sec_parms, "(1:d", 4);
+    iron_put_num_sexpr(sec_parms, sec_key, crypto_box_SECRETKEYBYTES);
+    sshbuf_put_u8(sec_parms, ')');
+
+    return sec_parms;
+}
+
+/**
+ *  Generate S-expression containing ed25519 or cv25519 key (public and secret parts)
  *
- *  @param q Byte array containing public key
- *  @param q_len Num bytes in q
- *  @param d Byte array containing secret key
- *  @param d_len Num bytes in d
+ *  Formats the GPG S-expression that holds an entire key pair. The secret key is encrypted.
+ *
+ *  @param pub_key Byte array containing public key (crypto_sign_PUBLICKEYBYTES)
+ *  @param sec_key Byte array containing secret key (crypto_sign_SECRETKEYBYTES)
  *  @param passphrase ASCII string used to generate key to encrypt secret key
  *  @return sshbuf * Buffer containing S-expression. Caller should sshbuf_free
  */
 struct sshbuf *
-generate_gpg_curve25519_seckey(const u_char * q, int q_len, const u_char * d, int d_len, const u_char * passphrase)
+generate_gpg_ecc_seckey(const struct sshbuf * pub_parms, const struct sshbuf * sec_parms, const u_char * passphrase)
 {
     /* First, we need to compute the hash of the key data. The string to be hashed is unfortunately not quite
      * exactly the same format as the subsequent string to write to the key, so for now we won't worry about
@@ -1313,18 +1388,6 @@ generate_gpg_curve25519_seckey(const u_char * q, int q_len, const u_char * d, in
     char protected_at[PROTECTED_AT_LEN];
 
     generate_gpg_protected_at(protected_at);
-
-    /* A bit more GPG/libgcrypt fun - the public key parameter q needs to be prefixed by an octet that indicates
-     * that it is only the x coordinate. However, we don't do this when generating the keygrip for the key. Bad
-     * GPG! Anyway, create a separate copy of the parameter that includes the prefix and use that in the appropriate
-     * places.
-     */
-    u_char * prefixed_q = malloc(q_len + 1);
-    *prefixed_q = GPG_ECC_PUBKEY_PREFIX;
-    memcpy(prefixed_q + 1, q, q_len);
-
-    struct sshbuf * pub_parms = generate_gpg_curve25519_pub_parms(prefixed_q, q_len + 1);
-    struct sshbuf * sec_parms = generate_gpg_curve25519_sec_parms(d, d_len);
 
     struct sshbuf * hash_str = sshbuf_new();
 
@@ -1365,12 +1428,52 @@ generate_gpg_curve25519_seckey(const u_char * q, int q_len, const u_char * d, in
     sshbuf_put_u8(seckey, ')');
     sshbuf_put_u8(seckey, ')');
 
-    sshbuf_free(pub_parms);
-    sshbuf_free(sec_parms);
     sshbuf_free(hash_str);
     sshbuf_free(sec_str);
     sshbuf_free(enc_sec_parms);
     return seckey;
+}
+
+/**
+ *  Generate S-expression containing ed25519 key (public and secret parts)
+ *
+ *  Formats the GPG S-expression that holds an entire ed25519 key pair. The secret key is encrypted.
+ *
+ *  @param pub_key Byte array containing public key (crypto_sign_PUBLICKEYBYTES)
+ *  @param sec_key Byte array containing secret key (crypto_sign_SECRETKEYBYTES)
+ *  @param passphrase ASCII string used to generate key to encrypt secret key
+ *  @return sshbuf * Buffer containing S-expression. Caller should sshbuf_free
+ */
+struct sshbuf *
+generate_gpg_ed25519_seckey(const u_char * pub_key, const u_char * sec_key, const u_char * passphrase)
+{
+    struct sshbuf * pub_parms = generate_gpg_ed25519_pub_parms(pub_key);
+    struct sshbuf * sec_parms = generate_gpg_ed25519_sec_parms(pub_key, sec_key);
+    struct sshbuf * sexpr = generate_gpg_ecc_seckey(pub_parms, sec_parms, passphrase);
+    sshbuf_free(pub_parms);
+    sshbuf_free(sec_parms);
+    return sexpr;
+}
+
+/**
+ *  Generate S-expression containing cv25519 key (public and secret parts)
+ *
+ *  Formats the GPG S-expression that holds an entire cv25519 key pair. The secret key is encrypted.
+ *
+ *  @param pub_key Byte array containing public key (crypto_box_PUBLICKEYBYTES)
+ *  @param sec_key Byte array containing secret key (crypto_box_SECRETKEYBYTES)
+ *  @param passphrase ASCII string used to generate key to encrypt secret key
+ *  @return sshbuf * Buffer containing S-expression. Caller should sshbuf_free
+ */
+struct sshbuf *
+generate_gpg_curve25519_seckey(const u_char * pub_key, const u_char * sec_key, const u_char * passphrase)
+{
+    struct sshbuf * pub_parms = generate_gpg_curve25519_pub_parms(pub_key);
+    struct sshbuf * sec_parms = generate_gpg_curve25519_sec_parms(sec_key);
+    struct sshbuf * sexpr = generate_gpg_ecc_seckey(pub_parms, sec_parms, passphrase);
+    sshbuf_free(pub_parms);
+    sshbuf_free(sec_parms);
+    return sexpr;
 }
 
 /**
@@ -1434,11 +1537,11 @@ encrypt_gpg_key_frame(const u_char * sym_key_frame, int frame_len, const gpg_pub
                       u_char * enc_frame, u_char * ephem_pk)
 {
     u_char secret[crypto_box_BEFORENMBYTES];
-    generate_curve25519_ephem_shared_secret(key->key, ephem_pk + 1, secret);
+    generate_curve25519_ephem_shared_secret(key->enc_key, ephem_pk + 1, secret);
     ephem_pk[0] = GPG_ECC_PUBKEY_PREFIX;            //  Indicates that it is on the X value, not the complete point
 
     u_char kek[AES128_KEY_BYTES];
-    generate_gpg_kek(key->fp, secret, kek);
+    generate_gpg_kek(key->enc_fp, secret, kek);
 
     EVP_CIPHER_CTX ciphctx;
     const EVP_CIPHER * cipher = EVP_aes_128_wrap();

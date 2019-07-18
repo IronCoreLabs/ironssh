@@ -56,6 +56,7 @@ static int      gpg_now;                    //  Everything that timestamps a pac
 
 static char   * user_login = NULL;          //  Stores login of user running process. Set at initialization
 
+static char   * user_dir = NULL;            //  The home directory for user_login
 static char   * user_ssh_dir = NULL;        //  The $(user_dir)/.ssh/ directory for user_login
 static char   * user_ironcore_dir = NULL;   //  The $(user_ssh_dir)/ironcore/ directory for user_login
 
@@ -68,8 +69,9 @@ static int      inited = 0;                 //  Indicates that process has initi
  *  Set user paths
  *
  *  Given a directory path that should include the desired user name (i.e /tmp/ironssh/regress/pokey),
- *  set the paths to the dirctory containing the user's RSA key and the directory where the new ironcore keys
- *  are stored. Strip the user name, append .ssh to that path for the .ssh dir, then append ironcore to that.
+ *  set the paths to the user's home directory, the subdirectory containing the user's SSH key, and the
+ *  subdirectory where the new ironcore keys are stored. Save the directory, append .ssh to that path
+ *  for the .ssh dir, then append ironcore to that.
  *
  *  This is intended primarily for testing purposes.
  *
@@ -78,12 +80,14 @@ static int      inited = 0;                 //  Indicates that process has initi
 static void
 iron_set_user_dir(const char * path)
 {
+    if (user_dir != NULL) free(user_dir);
     if (user_ssh_dir != NULL) free(user_ssh_dir);
     if (user_ironcore_dir != NULL) free(user_ironcore_dir);
 
     char lpath[PATH_MAX];
     strlcpy(lpath, path, sizeof(lpath));
     if (lpath[strlen(lpath) - 1] != '/') strlcat(lpath, "/", PATH_MAX);
+    user_dir = xstrdup(lpath);
     strlcat(lpath, IRON_SSH_DIR, sizeof(lpath));
     user_ssh_dir = xstrdup(lpath);
     strlcat(lpath, IRONCORE_SUBDIR, sizeof(lpath));
@@ -94,9 +98,10 @@ iron_set_user_dir(const char * path)
  *  Set login and user paths
  *
  *  Given a directory path that should include the desired user name (i.e /tmp/ironssh/regress/pokey),
- *  set up the user login and the paths to the directory containing the user's RSA key and the directory where the
- *  new ironcore keys are stored. For the example path, sets the user_login to pokey, the user_ssh_dir to
- *  <path>/.ssh, and the user_ironcore_dir to <path>/.ssh/ironcore.
+ *  set up the user login and the paths to the directory containing the user's SSH key and the directory where the
+ *  new ironcore keys are stored. For the example path, sets the user_login to pokey, the user_dir to
+ *  /tmp/ironssh/regress/pokey, the user_ssh_dir to <user_dir>/.ssh, and the user_ironcore_dir to
+ *  <user_dir>/.ssh/ironcore.
  *
  *  This is intended primarily for testing purposes.
  *
@@ -142,7 +147,7 @@ iron_initialize(void)
                 fatal("Unable to determine current user's login\n");
             } else {
                 user_login = xstrdup(user_pw->pw_name);
-                if (user_ssh_dir == NULL)  {
+                if (user_dir == NULL)  {
                     iron_set_user_dir(user_pw->pw_dir);
                 }
             }
@@ -170,6 +175,13 @@ iron_user_login(void)
 {
     if (!inited) iron_initialize();
     return user_login;
+}
+
+const char *
+iron_user_dir(void)
+{
+    if (!inited) iron_initialize();
+    return user_dir;
 }
 
 const char *
@@ -289,13 +301,13 @@ encrypt_input_file(FILE * infile, FILE * outfile, SHA_CTX * mdc_ctx, SHA256_CTX 
  *  @param infile File from which to read data
  *  @param fname Path of input file
  *  @param sym_key Randomly generated symmetric key to used to encrypt data. Should be AES256_KEY_BYTES
- *  @param rsa_key Key to use to sign message. Secret parms will be populated if they are not already
+ *  @param pub_keys User's public keys, including signing key. Used to fetch private signing key
  *  @return int 0 if successful, negative number if error
  *  @param outfile File to which to write encrypted data
  */
 static int
-write_encrypted_data_file(FILE * infile, const char * fname, const u_char * sym_key, Key * rsa_key,
-                          const u_char * rsa_key_id, FILE * outfile)
+write_encrypted_data_file(FILE * infile, const char * fname, const u_char * sym_key, const gpg_public_key * pub_keys,
+                          FILE * outfile)
 {
     int retval = -1;
 
@@ -320,7 +332,7 @@ write_encrypted_data_file(FILE * infile, const char * fname, const u_char * sym_
         //  packet. Need to figure out how long they are going to be as well. Go ahead and generate the OPS
         //  packet and header so we know their length, then generate the literal data packet header.
         gpg_packet ops_pkt;
-        generate_gpg_one_pass_signature_packet(rsa_key_id, &ops_pkt);
+        generate_gpg_one_pass_signature_packet(GPG_KEY_ID_FROM_FP(pub_keys->sign_fp), &ops_pkt);
         u_char ops_hdr[7];
         int ops_hdr_len = generate_gpg_tag_and_size(ops_pkt.tag, ops_pkt.len, ops_hdr);
 
@@ -331,7 +343,7 @@ write_encrypted_data_file(FILE * infile, const char * fname, const u_char * sym_
         //  Now generate the signature packet - we can get everything except the actual signature data. The
         //  length generated for the packet includes the signature that will be populated later.
         gpg_packet sig_pkt;
-        generate_gpg_data_signature_packet(rsa_key, rsa_key_id, &sig_pkt);
+        generate_gpg_data_signature_packet(pub_keys, &sig_pkt);
         u_char sig_hdr[7];
         int sig_hdr_len = generate_gpg_tag_and_size(sig_pkt.tag, sig_pkt.len, sig_hdr);
 
@@ -374,14 +386,14 @@ write_encrypted_data_file(FILE * infile, const char * fname, const u_char * sym_
             if (total_read >= 0) {
                 if ((off_t) total_read == statstr.st_size) {
                     //  Finish off the signature hash, then sign it and write the signature packet.
-                    if (finalize_gpg_data_signature_packet(&sig_ctx, rsa_key, &sig_pkt) == 0) {
+                    if (finalize_gpg_data_signature_packet(&sig_ctx, pub_keys, &sig_pkt) == 0) {
                         outp = output;
                         outp += iron_hashcrypt(&mdc_ctx, NULL, &aes_ctx, sig_hdr, sig_hdr_len, outp);
                         outp += iron_hashcrypt(&mdc_ctx, NULL, &aes_ctx, sshbuf_ptr(sig_pkt.data), sig_pkt.len, outp);
                         fwrite(output, 1, outp - output, outfile);
                         retval = write_gpg_mdc_packet(outfile, &mdc_ctx, &aes_ctx);
                     } else {
-                        error("Unable to retrieve secret RSA key to sign message.");
+                        error("Unable to retrieve secret key to sign message.");
                     }
                 } else {
                     error("Did not read the complete input file.");
@@ -436,16 +448,15 @@ write_gpg_encrypted_file(const char * fname, char * enc_fname)
                     //  We cheat and cast the const out of the recipient key pointer - we only ever write to
                     //  the current user's key.
                     retval = write_encrypted_data_file(infile, fname, sym_key_frame + 1,
-                                                       (Key *) &(recipient_key[0].rsa_key),
-                                                       GPG_KEY_ID_FROM_FP(recipient_key[0].signer_fp), outfile);
+                                                       recipient_key, outfile);
                     if (retval == 0) {
                         retval = fileno(outfile);
 
-                        char user_list[(IRON_MAX_RECIPIENTS - 1) * (IRON_MAX_LOGIN_LEN + 2) + 1];
+                        char user_list[IRON_MAX_RECIPIENTS * (IRON_MAX_LOGIN_LEN + 1) + 1];
                         user_list[0] = '\0';
                         for (int ct = 1; ct < recip_ct; ct++) {
                             if (ct > 1) strcat(user_list, ", ");
-                            strlcat(user_list, recipient_key[ct].login, IRON_MAX_LOGIN_LEN + 1);
+                            strlcat(user_list, recipient_key[ct].login, sizeof(user_list));
                         }
                         if (recip_ct > 1) {
                             logit("Data was shared with user%s %s", (recip_ct > 2) ? "s" : "", user_list);
@@ -513,7 +524,7 @@ open_decrypted_output_file(const char * fname, char * dec_fname)
  *  @param aes_ctx AES cipher to decrypt data
  *  @param infile File from which to read encrypted data
  *  @param dec_buf Place to store decrypted data (at least 528 bytes)
- *  @param rsa_key_id Place to store key ID extracted from OPS packet
+ *  @param sign_key_id Place to store key ID extracted from OPS packet
  *  @param fname Place to store name of the file that was encrypted (at least PATH_MAX bytes)
  *  @param num_dec Place to store number of bytes decrypted
  *  @param len Place to store remaining size of encrypted data to process
@@ -522,7 +533,7 @@ open_decrypted_output_file(const char * fname, char * dec_fname)
  */
 static int
 process_enc_data_hdr(SHA_CTX * mdc_ctx, EVP_CIPHER_CTX * aes_ctx, FILE * infile, u_char * dec_buf,
-                     u_char * rsa_key_id, char * fname, int * num_dec, ssize_t * len, int * extra)
+                     u_char * sign_key_id, char * fname, int * num_dec, ssize_t * len, int * extra)
 {
 //  After the header for the SEIPD packet and the one byte version number, there should be encrypted
 //  data. The start of this data has 16 bytes of random data, the last two bytes of that data repeated,
@@ -558,7 +569,7 @@ process_enc_data_hdr(SHA_CTX * mdc_ctx, EVP_CIPHER_CTX * aes_ctx, FILE * infile,
     //  First up, we expect a One Pass Signature (OPS) packet.
     int tag_size_len = extract_gpg_tag_and_size(dptr, &tag, len);
     dptr += tag_size_len;
-    int ops_len = extract_gpg_one_pass_signature_packet(dptr, *num_dec - (dptr - dec_buf), rsa_key_id);
+    int ops_len = extract_gpg_one_pass_signature_packet(dptr, *num_dec - (dptr - dec_buf), sign_key_id);
     if (tag != GPG_TAG_ONE_PASS_SIGNATURE || ops_len < 0 || ops_len != *len) {
         error("Input file missing valid one pass signature.");
         return -4;
@@ -604,13 +615,10 @@ process_enc_data_hdr(SHA_CTX * mdc_ctx, EVP_CIPHER_CTX * aes_ctx, FILE * infile,
  *  Read chunks from the file, decrypt them, and write the decrypted data to the output file until
  *  we have exhausted the literal data packet.
  *
- *  *** NOTE: until we have a way to retrieve the RSA key for a key ID, we can't verify the signature
- *  packet. But we do accumulate the hash as we go, in preparation.
- *
  *  @param mdc_ctx SHA1 hash of decrypted data
  *  @param sig_ctx SHA256 hash of decrypted data
  *  @param aes_ctx AES cipher to decrypt data
- *  @param rsa_key_id ID of the key that signed the data while encrypting
+ *  @param sign_key_id ID of the key that signed the data while encrypting
  *  @param infile File from which to read encrypted data
  *  @param outfile File to which to write decrypted data
  *  @param dec_buf Place to store decrypted data (at least DECRYPT_CHUNK_SIZE + 2 * AES_BLOC_SIZE bytes)
@@ -620,7 +628,7 @@ process_enc_data_hdr(SHA_CTX * mdc_ctx, EVP_CIPHER_CTX * aes_ctx, FILE * infile,
  *  @return int 0 if successful, negative number if error
  */
 static int
-process_enc_data(SHA_CTX * mdc_ctx, SHA256_CTX * sig_ctx, EVP_CIPHER_CTX * aes_ctx, u_char * rsa_key_id,
+process_enc_data(SHA_CTX * mdc_ctx, SHA256_CTX * sig_ctx, EVP_CIPHER_CTX * aes_ctx, u_char * sign_key_id,
                  FILE * infile, FILE * outfile, u_char * dec_buf, int offset, ssize_t len, int extra)
 {
     int retval = 0;
@@ -677,7 +685,7 @@ process_enc_data(SHA_CTX * mdc_ctx, SHA256_CTX * sig_ctx, EVP_CIPHER_CTX * aes_c
             num_dec += last_dec + extra;
 
             //  dec_buf should contain the signature packet followed by the MDC packet now.
-            last_dec = process_data_signature_packet(dec_buf, num_dec, sig_ctx, rsa_key_id);
+            last_dec = process_data_signature_packet(dec_buf, num_dec, sig_ctx, sign_key_id);
             if (last_dec > 0) {
                 SHA1_Update(mdc_ctx, dec_buf, last_dec);
                 dptr = dec_buf + last_dec;
@@ -748,7 +756,7 @@ write_gpg_decrypted_file(const char * fname, char * dec_fname)
         return -1;
     }
 
-    retval = get_gpg_pkesk_packet(infile, GPG_KEY_ID_FROM_FP(pub_keys->fp), msg, &next_tag, &next_len);
+    retval = get_gpg_pkesk_packet(infile, GPG_KEY_ID_FROM_FP(pub_keys->enc_fp), msg, &next_tag, &next_len);
     if (retval == 0) {
         u_char * msg_ptr = msg;
         if (*(msg_ptr++) == GPG_PKALGO_ECDH) {
@@ -793,9 +801,9 @@ write_gpg_decrypted_file(const char * fname, char * dec_fname)
                     ssize_t len;
                     int extra;
                     char local_fname[PATH_MAX];
-                    u_char rsa_key_id[GPG_KEY_ID_LEN];
+                    u_char sign_key_id[GPG_KEY_ID_LEN];
 
-                    int dec_offset = process_enc_data_hdr(&mdc_ctx, &aes_ctx, infile, dec_buf, rsa_key_id,
+                    int dec_offset = process_enc_data_hdr(&mdc_ctx, &aes_ctx, infile, dec_buf, sign_key_id,
                                                           local_fname, &num_dec, &len, &extra);
                     if (dec_offset < 0) {
                         fclose(infile);
@@ -815,7 +823,7 @@ write_gpg_decrypted_file(const char * fname, char * dec_fname)
 
                         //  If there is any Sig/MDC data in dec_buf, len will be zero, extra will be the number
                         //  of bytes of that data
-                        retval = process_enc_data(&mdc_ctx, &sig_ctx, &aes_ctx, rsa_key_id, infile, outfile,
+                        retval = process_enc_data(&mdc_ctx, &sig_ctx, &aes_ctx, sign_key_id, infile, outfile,
                                                   dec_buf, dptr - dec_buf, len, extra);
 
                         if (retval == 0) {

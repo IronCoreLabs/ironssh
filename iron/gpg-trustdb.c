@@ -91,19 +91,18 @@
  *
  *  Write the hash table. All but one of the records will be empty - this is just a block
  *  of zeroes with the record type at the start. Need to figure out the record and entry in
- *  that record that are non-zero. The "hash" of the key is just its first byte - figure out
- *  which entry in which record represents that byte, and fix that record accordingly.
+ *  that record that are non-zero. The "hash" of the key fingerprint is just its first byte -
+ *  figure out which entry in which record represents that byte, and fix that record accordingly.
  *
  *  @param tdb_file File to which to write table
- *  @param key Byte array containing the public key to add to table
- *  @param key_len Num bytes in key
+ *  @param key_fp Byte array containing the fingerprint of the public key to add to table
  *  @return int ID of last record written to hash table, negative number if error
  */
 static int
-write_trustdb_htbl(FILE * tdb_file, const u_char * key, int key_len)
+write_trustdb_htbl(FILE * tdb_file, const u_char * key_fp)
 {
     u_char tdb_rec[GPG_TRUST_REC_SIZE];
-    int key_hash = key[0];
+    int key_hash = key_fp[0];
     int retval = -1;
 
     int num_recs = (GPG_TRUST_MIN_HTBL_SIZE + GPG_TRUST_HTBL_ITEMS_PER_REC - 1) /
@@ -177,24 +176,23 @@ generate_gpg_trustdb_version(u_char * rec)
 /**
  *  Generate the "trust" packet for trustDB file.
  *
- *  @param rec Place to write generated packet (at least key_len + 10 bytes)
- *  @param key Byte array with public key being added to DB
- *  @param key_len Num bytes in key
+ *  @param rec Place to write generated packet (at least GPG_KEY_FP_LEN + 10 bytes)
+ *  @param key_fp Byte array with public key fingerprint being added to DB (GPG_KEY_FP_LEN bytes)
  *  @param next_rec index of the record following hash table where trust packet will go
  */
 static void
-generate_gpg_trustdb_trust(u_char * rec, const u_char * key, int key_len, int next_rec)
+generate_gpg_trustdb_trust(u_char * rec, const u_char * key_fp, int next_rec)
 {
     u_char * recp = rec;
 
     bzero(rec, GPG_TRUST_REC_SIZE);
-    *recp = GPG_TRUST_RECTYPE_TRUST;   recp++;
-    /*  Skip reserved  */              recp++;
-    memcpy(recp, key, key_len);        recp += key_len;
-    *recp = GPG_TRUST_ULTIMATE;        recp++;
-    /*  Leave depth 0 */               recp++;
-    /*  Leave min owner trust 0 */     recp++;
-    /*  Skip reserved  */              recp++;
+    *recp = GPG_TRUST_RECTYPE_TRUST;      recp++;
+    /*  Skip reserved  */                 recp++;
+    memcpy(recp, key_fp, GPG_KEY_FP_LEN); recp += GPG_KEY_FP_LEN;
+    *recp = GPG_TRUST_ULTIMATE;           recp++;
+    /*  Leave depth 0 */                  recp++;
+    /*  Leave min owner trust 0 */        recp++;
+    /*  Skip reserved  */                 recp++;
     iron_int_to_buf(next_rec, recp);
 }
 
@@ -232,13 +230,12 @@ generate_gpg_trustdb_valid(u_char * rec, const char * uid)
  *
  *  Create the trustdb.gpg file and write it under the specified .ssh directory.
  *
- *  @param key Public key to add trust
- *  @param key_len Num bytes in key
+ *  @param key_fp Fingerprint of public key for which to add trust (GPG_KEY_FP_LEN bytes)
  *  @param uid String identifying user (typically "Name <emailaddr>")
  *  @return int 0 if successful, negative number if error
  */
 int
-write_gpg_trustdb_file(const u_char * key, size_t key_len, const char * uid)
+write_gpg_trustdb_file(const u_char * key_fp, const char * uid)
 {
     int retval = -1;
 
@@ -252,11 +249,11 @@ write_gpg_trustdb_file(const u_char * key, size_t key_len, const char * uid)
 
         generate_gpg_trustdb_version(tdb_rec);
         if (fwrite(tdb_rec, 1, sizeof(tdb_rec), tdb_fp) == sizeof(tdb_rec)) {
-            int last_rec = write_trustdb_htbl(tdb_fp, key, key_len);
+            int last_rec = write_trustdb_htbl(tdb_fp, key_fp);
             if (last_rec > 0) {
                 //  Now write the trust and valid records. The trust record will be # last_rec + 1, so
                 //  the valid record will be # last_rec + 2.
-                generate_gpg_trustdb_trust(tdb_rec, key, key_len, last_rec + 2);
+                generate_gpg_trustdb_trust(tdb_rec, key_fp, last_rec + 2);
                 if (fwrite(tdb_rec, 1, sizeof(tdb_rec), tdb_fp) == sizeof(tdb_rec)) {
                     generate_gpg_trustdb_valid(tdb_rec, uid);
                     if (fwrite(tdb_rec, 1, sizeof(tdb_rec), tdb_fp) == sizeof(tdb_rec)) {
