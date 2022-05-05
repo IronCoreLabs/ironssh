@@ -1,5 +1,8 @@
 ![][logo]
 
+This repository was archived on May 5, 2022. We encourage you to investigate our [IronHide utility](https://github.com/IronCoreLabs/ironhide) for a newer way to protect files stored on persistent file stores.
+
+
 # IronSFTP - End-to-end secure file transfer
 
 _An alternative to **sftp** and **scp** that keeps files encrypted after they're uploaded and allows sharing of files with cryptographic enforcement. See the [project homepage][homepage] for more details._
